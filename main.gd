@@ -147,6 +147,11 @@ static var upd_done = false
 var autotest = false
 var at_t = 0.0
 var at_step = 0
+var img_cache = {}
+var tex_cache = {}
+var warmed = false
+var break_t = 0.0           # Pause beim Rundenwechsel
+var break_reload = false
 var forcing = false
 
 
@@ -278,8 +283,14 @@ func _make_fx_assets() -> void:
 
 
 # Eine Pappe: Bild auf einer Ebene, Drehpunkt unten in der Mitte
+func _tex(tex_name: String) -> Texture2D:
+	if not tex_cache.has(tex_name):
+		tex_cache[tex_name] = load("res://art/" + tex_name)
+	return tex_cache[tex_name]
+
+
 func _card(tex_name: String, w: float, pos: Vector3, kind: String, h: float = -1.0) -> Dictionary:
-	var tex: Texture2D = load("res://art/" + tex_name)
+	var tex: Texture2D = _tex(tex_name)
 	if h < 0:
 		h = w * tex.get_height() / float(tex.get_width())
 	var mi = MeshInstance3D.new()
@@ -296,13 +307,16 @@ func _card(tex_name: String, w: float, pos: Vector3, kind: String, h: float = -1
 	pv.position = pos
 	add_child(pv)
 	pv.add_child(mi)
-	# kleine Kopie des Bildes für die Treffer-Prüfung (durchsichtige Stellen zählen nicht)
-	var img: Image = tex.get_image()
-	if img.is_compressed():
-		img.decompress()
-	img = img.duplicate()
-	if img.get_width() > 256:
-		img.resize(256, maxi(1, int(256.0 * img.get_height() / img.get_width())), Image.INTERPOLATE_BILINEAR)
+	# kleine Kopie des Bildes für die Treffer-Prüfung (durchsichtige Stellen zählen nicht), einmal pro Bild
+	var img: Image = img_cache.get(tex_name)
+	if img == null:
+		img = tex.get_image()
+		if img.is_compressed():
+			img.decompress()
+		img = img.duplicate()
+		if img.get_width() > 256:
+			img.resize(256, maxi(1, int(256.0 * img.get_height() / img.get_width())), Image.INTERPOLATE_BILINEAR)
+		img_cache[tex_name] = img
 	return {"pv": pv, "mi": mi, "mat": m, "img": img, "w": w, "h": h, "kind": kind, "t": 99.0, "delay": 0.0, "up": true}
 
 
@@ -909,6 +923,65 @@ func _upd_draw(c: Control, a: float) -> void:
 
 
 # ================================================================ Ablauf
+# Jeder Effekt einmal unsichtbar hinter der Fassade: das Handy bereitet dabei Shader und Partikel vor,
+# damit es beim ersten echten Schuss, Treffer oder der ersten Explosion nicht ruckelt
+func _warmup() -> void:
+	for n in ENEMY_TEX:
+		_tex(n + ".png")
+	for n in ["box.png", "box_mega.png"]:
+		_tex(n)
+	var p = Vector3(0.0, 3.0, FAC_Z - 1.6)
+	fx_k = 1.0
+	_fb_boom(p, 1.0)
+	for k in ["boom0", "boom1", "boom2", "smoke5"]:
+		var q = _fb_quad(k, p, 0.5)
+		q.visible = true
+		get_tree().create_timer(0.4).timeout.connect(q.queue_free)
+	_sparks(p, Vector3.UP, 4)
+	_dust(p, Vector3.UP, 3, Color(0.7, 0.6, 0.5), 0.3)
+	_chunks(p, Vector3.UP, 3, [Color(0.5, 0.4, 0.3), Color(0.6, 0.5, 0.4), Color(0.4, 0.3, 0.2)], 0.04)
+	_smoke(p, 2)
+	var fl = Sprite3D.new()
+	fl.texture = tex_flash
+	fl.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	fl.shaded = false
+	fl.position = p
+	add_child(fl)
+	get_tree().create_timer(0.4).timeout.connect(fl.queue_free)
+	_flash_light(p, 2.0, Color(1, 0.7, 0.4), 1.0)
+	var nd = Sprite3D.new()
+	nd.texture = tex_nade
+	nd.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	nd.shaded = false
+	nd.position = p
+	add_child(nd)
+	get_tree().create_timer(0.4).timeout.connect(nd.queue_free)
+	var hole = Sprite3D.new()
+	hole.texture = tex_hole
+	hole.shaded = true
+	hole.alpha_cut = SpriteBase3D.ALPHA_CUT_DISABLED
+	hole.position = p
+	add_child(hole)
+	get_tree().create_timer(0.4).timeout.connect(hole.queue_free)
+	var lb = Label3D.new()
+	lb.text = "+100"
+	lb.font = font
+	lb.font_size = 54
+	lb.outline_size = 14
+	lb.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	lb.modulate = Color(1, 1, 1, 0.01)
+	lb.pixel_size = 0.0001
+	lb.position = p
+	add_child(lb)
+	get_tree().create_timer(0.4).timeout.connect(lb.queue_free)
+	# eine Figur und eine Kiste einmal anlegen (Bild-Cache, Material)
+	for n in [ENEMY_TEX[0] + ".png", "box.png", "box_mega.png"]:
+		var c = _card(n, 0.5, p, "card")
+		get_tree().create_timer(0.4).timeout.connect(c.pv.queue_free)
+	for n in ENEMY_TEX:
+		_card(n + ".png", 0.1, p, "card").pv.queue_free()
+
+
 func _set_state(s: String) -> void:
 	state = s
 	st_t = 0.0
@@ -954,6 +1027,7 @@ func _start_game() -> void:
 	round_kills = 0
 	out_t = -1.0
 	over_reason = ""
+	break_t = 0.0
 	_round_setup()
 	weapon = "pistol"
 	wpn_ammo = 0
@@ -989,14 +1063,28 @@ func _round_setup() -> void:
 
 
 func _round_clear() -> void:
+	if break_t > 0.0:
+		return
 	var left = ammo + reserve
 	var bonus = left * 50 + int(health) * 5
 	score += bonus
 	stage += 1
 	health = minf(100.0, health + 25.0)
-	_round_setup()
-	_show_msg("ROUND %d" % stage, "clear bonus +%d  ·  %d enemies  ·  %d bullets" % [bonus, round_goal, ammo + reserve], 2.8)
-	spawn_t = 3.0
+	var goal = 10 + (stage - 1) * 3
+	var pool = goal + maxi(3, 6 - stage)
+	_show_msg("ROUND %d" % stage, "clear bonus +%d  ·  %d enemies  ·  %d bullets" % [bonus, goal, pool], 2.6)
+	# kurze Ruhe: alle verschwinden, dann hört man das Nachladen und die Waffe ist voll
+	for e in enemies:
+		if e.state != "fall":
+			e.state = "hide"
+			e.t = 0.0
+	for pr in projs.duplicate():
+		if pr.kind == "enade":
+			_proj_remove(pr)
+	break_t = 2.6
+	break_reload = false
+	cover_time = 0.0
+	spawn_t = 0.6
 
 
 func _game_over() -> void:
@@ -1071,7 +1159,9 @@ func _process(dt: float) -> void:
 
 	match state:
 		"title":
-			pass
+			if not warmed and st_t > 0.15:
+				warmed = true
+				_warmup()
 		"intro":
 			if st_t > 1.6:
 				_set_state("play")
@@ -1090,6 +1180,13 @@ func _process(dt: float) -> void:
 
 
 func _play_update(dt: float) -> void:
+	if break_t > 0.0:
+		break_t -= dt
+		if not break_reload and break_t < 1.7:
+			break_reload = true
+			_round_setup()
+			_sfx("reload", 0.0, 0.0)
+		return
 	# Nachladen nur in Deckung
 	if cover and ammo < MAG and reserve > 0:
 		if reload_t <= 0:
@@ -1182,7 +1279,7 @@ func _spawn() -> void:
 		_spawn_box(s, kills >= 5 and randf() < 0.15)
 		return
 	var ti = randi() % ENEMY_TEX.size()
-	var tex: Texture2D = load("res://art/" + ENEMY_TEX[ti] + ".png")
+	var tex: Texture2D = _tex(ENEMY_TEX[ti] + ".png")
 	var w = ENEMY_H * tex.get_width() / float(tex.get_height())
 	var c = _card(ENEMY_TEX[ti] + ".png", w, s.pos, "card", ENEMY_H)
 	c.merge({"slot": s, "state": "appear", "t": 0.0, "aim": _diff_aim() * randf_range(0.85, 1.2), "shots": 1 + (1 if stage >= 2 and randf() < 0.35 else 0), "gun_v": GUN_V[ti], "mode": s.mode, "seen": 0.0, "side": -1.0 if randf() < 0.5 else 1.0, "voice": ["A", "B", "C", "D"][randi() % 4]}, true)
@@ -1320,7 +1417,7 @@ func _kill_enemy(c: Dictionary, point: Vector3, head: bool) -> void:
 			break
 	_float_text(point + Vector3(0, 0.25, 0.1), ("HEADSHOT  +%d" if head else "+%d") % pts, head)
 	round_kills += 1
-	if round_kills >= round_goal and state == "play":
+	if round_kills == round_goal and state == "play" and break_t <= 0.0:
 		get_tree().create_timer(0.9).timeout.connect(func():
 			if state == "play":
 				_round_clear())
@@ -1365,7 +1462,8 @@ func _enemies_update(dt: float) -> void:
 						e.t = 0.0
 					continue
 				e.seen += dt
-				if state != "play":
+				if state != "play" or break_t > 0.0:
+					e.t = minf(e.t, e.aim * 0.5)
 					continue
 				if e.t >= e.aim:
 					_enemy_fire(e)
