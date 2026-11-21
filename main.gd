@@ -48,6 +48,8 @@ var wall = {}           # Mauer im Vordergrund (Deckung)
 var slots = []          # Stellen, an denen Gegner auftauchen
 var enemies = []
 var sounds = {}
+var voices = {}
+var bark_cd = 0.0
 var ambience: AudioStreamPlayer
 var motes: CPUParticles3D
 
@@ -384,7 +386,6 @@ func _make_world() -> void:
 			slots.append({"pos": Vector3(x, ybot - 0.74, FAC_Z - 0.32), "mode": "flip", "busy": false, "name": "window%d" % i})
 	slots.append({"pos": Vector3(-2.55, 0.0, -7.4), "mode": "flip", "busy": false, "name": "crates"})
 	slots.append({"pos": Vector3(4.25, 0.28, -8.75), "mode": "flip", "busy": false, "name": "car"})
-	slots.append({"pos": Vector3(6.35, 0.12, -8.0), "mode": "flip", "busy": false, "name": "hedge"})
 	slots.append({"pos": Vector3(-6.75, 0.0, -9.95), "mode": "flip", "busy": false, "name": "tree"})
 
 	# Staubkörnchen im Abendlicht
@@ -422,12 +423,52 @@ func _make_sounds() -> void:
 			if ResourceLoader.exists(p):
 				sounds[n] = load(p)
 				break
+	# Sprüche: voices[kategorie][stimme] = [Streams]; Stimmen A Boss, B Hitzkopf, C Brecher, D Gangsterin
+	for cat in ["appear", "fire", "hit", "taunt", "mandown"]:
+		voices[cat] = {}
+		for v in ["A", "B", "C", "D"]:
+			var arr = []
+			for i in range(1, 8):
+				var vp = "res://sfx/voice/bark_%s_%s%d.ogg" % [cat, v, i]
+				if ResourceLoader.exists(vp):
+					arr.append(load(vp))
+			voices[cat][v] = arr
 	ambience = AudioStreamPlayer.new()
 	ambience.stream = sounds.get("ambience")
 	ambience.volume_db = -8.0
 	add_child(ambience)
 	ambience.finished.connect(func(): ambience.play())
 	ambience.play()
+
+
+# Spruch eines Gegners, kommt räumlich von seiner Position
+func _bark(e: Dictionary, cat: String, chance: float = 1.0, delay: float = 0.0, force: bool = false) -> void:
+	if randf() > chance or not voices.has(cat):
+		return
+	if not force and bark_cd > 0.0:
+		return
+	var arr: Array = voices[cat].get(e.get("voice", "A"), [])
+	if arr.is_empty():
+		return
+	bark_cd = 0.9
+	var stream = arr[randi() % arr.size()]
+	var go = func():
+		if not is_instance_valid(e.pv):
+			return
+		var p = AudioStreamPlayer3D.new()
+		p.stream = stream
+		p.unit_size = 14.0
+		p.volume_db = 2.0
+		p.pitch_scale = randf_range(0.97, 1.03)
+		p.attenuation_filter_cutoff_hz = 20500.0
+		add_child(p)
+		p.global_position = e.mi.global_transform * Vector3(0, e.h * 0.85, 0)
+		p.finished.connect(p.queue_free)
+		p.play()
+	if delay > 0.0:
+		get_tree().create_timer(delay).timeout.connect(go)
+	else:
+		go.call()
 
 
 func _sfx(n: String, vol: float = 0.0, pitch_var: float = 0.08) -> void:
@@ -876,6 +917,7 @@ func _process(dt: float) -> void:
 	st_t += dt
 	msg_t = maxf(0.0, msg_t - dt)
 	tip_t = maxf(0.0, tip_t - dt)
+	bark_cd = maxf(0.0, bark_cd - dt)
 	kick = maxf(0.0, kick - dt * 6.0)
 	shake = maxf(0.0, shake - dt * 3.0)
 	hurt = maxf(0.0, hurt - dt * 1.6)
@@ -977,10 +1019,11 @@ func _spawn() -> void:
 	var tex: Texture2D = load("res://art/" + ENEMY_TEX[ti] + ".png")
 	var w = ENEMY_H * tex.get_width() / float(tex.get_height())
 	var c = _card(ENEMY_TEX[ti] + ".png", w, s.pos, "card", ENEMY_H)
-	c.merge({"slot": s, "state": "appear", "t": 0.0, "aim": _diff_aim() * randf_range(0.85, 1.2), "shots": 1 + (1 if stage >= 2 and randf() < 0.35 else 0), "gun_v": GUN_V[ti], "mode": s.mode, "seen": 0.0, "side": -1.0 if randf() < 0.5 else 1.0}, true)
+	c.merge({"slot": s, "state": "appear", "t": 0.0, "aim": _diff_aim() * randf_range(0.85, 1.2), "shots": 1 + (1 if stage >= 2 and randf() < 0.35 else 0), "gun_v": GUN_V[ti], "mode": s.mode, "seen": 0.0, "side": -1.0 if randf() < 0.5 else 1.0, "voice": ["A", "B", "C", "D"][randi() % 4]}, true)
 	_enemy_pose(c, 0.0)
 	enemies.append(c)
 	_sfx("target_up", -6.0, 0.12)
+	_bark(c, "appear", 0.55, 0.25)
 
 
 func _enemy_pose(e: Dictionary, k: float) -> void:
@@ -1057,6 +1100,7 @@ func _enemies_update(dt: float) -> void:
 
 
 func _enemy_fire(e: Dictionary) -> void:
+	_bark(e, "fire", 0.3)
 	var mp = _muzzle(e)
 	_flash(mp + Vector3(0, 0, 0.15), 0.9, Color(1.0, 0.7, 0.35), 7.0)
 	_smoke(mp, 4)
@@ -1066,7 +1110,8 @@ func _enemy_fire(e: Dictionary) -> void:
 		health -= randf_range(9.0, 14.0)
 		hurt = 0.85
 		shake = 0.7
-		_sfx("player_hit", 0.0)
+		_sfx("player_hit", 0.0, 0.04)
+		_bark(e, "taunt", 0.6, 0.45, true)
 		if not autotest:
 			Input.vibrate_handheld(70)
 	else:
@@ -1255,6 +1300,11 @@ func _shoot(p: Vector2) -> void:
 		c.state = "fall"
 		c.t = 0.0
 		_impact(hit, false)
+		_bark(c, "hit", 1.0, 0.0, true)
+		for o in enemies:
+			if o != c and o.state != "fall" and o.state != "hide":
+				_bark(o, "mandown", 0.5, 0.75, true)
+				break
 		_float_text(hit.point + Vector3(0, 0.25, 0.1), ("HEADSHOT  +%d" if head else "+%d") % pts, head)
 		if kills % KILLS_PER_STAGE == 0:
 			stage += 1
@@ -1665,7 +1715,7 @@ func _autotest(dt: float) -> void:
 		cover = false
 		aim_idx = 99
 		thumb = _thumb_home() + Vector2(30, -20)
-		for n in ["window0", "door", "car", "crates", "hedge", "window4"]:
+		for n in ["window0", "door", "car", "crates", "tree", "window4"]:
 			var e = _force_enemy(n)
 			e.aim = 99.0
 		at_step = 4
