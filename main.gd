@@ -116,6 +116,8 @@ var holes_live = []
 var car_card = {}
 var car_dead = false
 var car_fx = []             # Feuer und Rauch am kaputten Auto
+var car_burn_t = 0.0
+var car_smoke_t = 0.0
 var weapon = "pistol"       # pistol, shotgun, smg, rocket
 var wpn_ammo = 0
 var grenades = 1
@@ -148,6 +150,9 @@ static var upd_done = false
 var autotest = false
 var at_t = 0.0
 var at_step = 0
+var evlog = []              # letzte Ereignisse (für das Ruckel-Protokoll)
+var hitches = []            # gemessene Hänger: {ms, what}
+var frame_avg = 0.016
 var light_pool = []
 var mega_light: OmniLight3D
 var car_light: OmniLight3D
@@ -493,7 +498,15 @@ func _make_sounds() -> void:
 	reload_player = AudioStreamPlayer.new()
 	reload_player.volume_db = -1.0
 	add_child(reload_player)
+	var bi = AudioServer.bus_count
+	AudioServer.add_bus(bi)
+	AudioServer.set_bus_name(bi, "Music")
+	AudioServer.set_bus_send(bi, "Master")
+	var lim = AudioEffectHardLimiter.new()
+	lim.ceiling_db = -0.8
+	AudioServer.add_bus_effect(bi, lim)
 	music = AudioStreamPlayer.new()
+	music.bus = "Music"
 	music.stream = sounds.get("music")
 	add_child(music)
 	music.finished.connect(func(): music.play())
@@ -510,7 +523,7 @@ func _music_apply() -> void:
 		music.volume_db = -80.0
 		return
 	var base = linear_to_db(music_vol)
-	music.volume_db = lerpf(base - 14.0, base + 4.0, music_k)
+	music.volume_db = lerpf(base - 14.0, base + 13.0, music_k)
 
 
 # Spruch eines Gegners, kommt räumlich von seiner Position
@@ -523,6 +536,7 @@ func _bark(e: Dictionary, cat: String, chance: float = 1.0, delay: float = 0.0, 
 	if arr.is_empty():
 		return
 	bark_cd = 0.9
+	_evt("voice " + cat)
 	var stream = arr[randi() % arr.size()]
 	var go = func():
 		if not is_instance_valid(e.pv):
@@ -762,7 +776,7 @@ func _hud_draw(c: Control) -> void:
 		var hk = clampf(health / 100.0, 0, 1)
 		var hcol = Color(0.36, 0.86, 0.3).lerp(Color(0.95, 0.25, 0.15), clampf(1.0 - hk * 1.6, 0, 1))
 		c.draw_rect(Rect2(70, 34, bw * hk, 18), hcol)
-		_text(c, Vector2(282, 51), "%d" % ceili(health), 20)
+		_text(c, Vector2(282, 51), "%d" % maxi(0, ceili(health)), 20)
 		# Punkte oben rechts
 		_panel(c, Rect2(vs.x - 270, 18, 250, 50))
 		_text(c, Vector2(vs.x - 252, 51), "SCORE", 17, Color(1, 1, 1, 0.7), HORIZONTAL_ALIGNMENT_LEFT, -1, font_light)
@@ -843,6 +857,12 @@ func _hud_draw(c: Control) -> void:
 		_text(c, Vector2(0, vs.y * 0.74), "TAP TO START", 30, Color(1, 1, 1, bl * a), HORIZONTAL_ALIGNMENT_CENTER, vs.x)
 		_text(c, Vector2(vs.x - 220, vs.y - 18), "Build %d" % _my_build(), 14, Color(1, 1, 1, 0.5 * a), HORIZONTAL_ALIGNMENT_RIGHT, 200, font_light)
 		_upd_draw(c, a)
+	if state == "over" and st_t > 1.2 and not hitches.is_empty():
+		var ha = clampf((st_t - 1.2) * 2.0, 0, 1)
+		var y0 = vs.y - 24.0 - 20.0 * (hitches.size() - 1)
+		for i in hitches.size():
+			var h = hitches[i]
+			_text(c, Vector2(20, y0 + i * 20), "Stutter %d ms after: %s" % [h.ms, h.what], 14, Color(1, 0.8, 0.6, 0.8 * ha), HORIZONTAL_ALIGNMENT_LEFT, vs.x - 260, font_light)
 	if state == "over" and st_t > 1.2:
 		var a = clampf((st_t - 1.2) * 2.0, 0, 1)
 		_text(c, Vector2(0, vs.y * 0.62), "TAP TO PLAY AGAIN", 26, Color(1, 1, 1, a * (0.45 + 0.55 * absf(sin(st_t * 2.6)))), HORIZONTAL_ALIGNMENT_CENTER, vs.x)
@@ -941,7 +961,7 @@ func _warmup() -> void:
 	var p = Vector3(0.0, 3.0, FAC_Z - 1.6)
 	fx_k = 1.0
 	_fb_boom(p, 1.0)
-	for k in ["boom0", "boom1", "boom2", "smoke5"]:
+	for k in ["boom0", "boom1", "boom2", "smoke5", "smoke5_dark"]:
 		var q = _fb_quad(k, p, 0.5)
 		q.visible = true
 		get_tree().create_timer(0.4).timeout.connect(q.queue_free)
@@ -983,11 +1003,26 @@ func _warmup() -> void:
 	add_child(lb)
 	get_tree().create_timer(0.4).timeout.connect(lb.queue_free)
 	# eine Figur und eine Kiste einmal anlegen (Bild-Cache, Material)
-	for n in [ENEMY_TEX[0] + ".png", "box.png", "box_mega.png"]:
-		var c = _card(n, 0.5, p, "card")
-		get_tree().create_timer(0.4).timeout.connect(c.pv.queue_free)
+	var all_cards = []
 	for n in ENEMY_TEX:
-		_card(n + ".png", 0.1, p, "card").pv.queue_free()
+		all_cards.append(n + ".png")
+	all_cards += ["box.png", "box_mega.png"]
+	for i in all_cards.size():
+		var c = _card(all_cards[i], 0.6, p + Vector3(-2.0 + i * 0.5, -0.5, 0), "card")
+		get_tree().create_timer(0.6).timeout.connect(c.pv.queue_free)
+	_flash_light(p + Vector3(0, 0.5, 0.5), 4.0, Color(1, 0.7, 0.4), 1.0, 0.5)
+	_flash_light(p + Vector3(1, 0.5, 0.5), 4.0, Color(1, 0.7, 0.4), 1.0, 0.5)
+	# räumlicher Ton: einmal stumm einrichten, damit der erste Spruch nicht hängt
+	var a3 = AudioStreamPlayer3D.new()
+	a3.stream = sounds.get("target_up")
+	a3.volume_db = -80.0
+	a3.unit_size = 14.0
+	add_child(a3)
+	a3.global_position = p
+	a3.play()
+	get_tree().create_timer(1.0).timeout.connect(a3.queue_free)
+	for snd in ["target_up", "shot_player", "shot_enemy", "impact_brick", "pickup", "reload"]:
+		_sfx(snd, -80.0, 0.0)
 
 
 func _set_state(s: String) -> void:
@@ -1123,7 +1158,26 @@ func _pop(t: float) -> float:
 	return 1.0 - exp(-7.5 * t) * cos(12.5 * t)
 
 
+func _evt(what: String) -> void:
+	evlog.append({"t": Time.get_ticks_msec(), "w": what})
+	if evlog.size() > 24:
+		evlog.pop_front()
+
+
 func _process(dt: float) -> void:
+	# Ruckel-Protokoll: ein Bild, das länger als 0,12 s gebraucht hat, wird mit den Ereignissen davor notiert
+	var spike = dt > maxf(0.12, frame_avg * 3.0)
+	frame_avg = lerpf(frame_avg, minf(dt, 0.1), 0.05)
+	if spike and (state == "play" or state == "intro"):
+		var now = Time.get_ticks_msec()
+		var ws = []
+		for e in evlog:
+			if now - int(e.t) < int(dt * 1000.0) + 250:
+				ws.append(e.w)
+		hitches.append({"ms": int(dt * 1000.0), "what": ", ".join(ws) if not ws.is_empty() else "nothing logged"})
+		if hitches.size() > 4:
+			hitches.pop_front()
+		print("HITCH ", int(dt * 1000.0), " ms after: ", hitches[-1].what)
 	dt = minf(dt, 0.05)
 	st_t += dt
 	msg_t = maxf(0.0, msg_t - dt)
@@ -1182,6 +1236,7 @@ func _process(dt: float) -> void:
 	_proj_update(dt)
 	_fb_update(dt)
 	_lights_update(dt)
+	_car_burn(dt)
 	_camera_update(dt)
 	if autotest:
 		_autotest(dt)
@@ -1294,6 +1349,7 @@ func _spawn() -> void:
 		_spawn_box(s, kills >= 5 and randf() < 0.15)
 		return
 	var ti = randi() % ENEMY_TEX.size()
+	_evt("spawn " + ENEMY_TEX[ti])
 	var tex: Texture2D = _tex(ENEMY_TEX[ti] + ".png")
 	var w = ENEMY_H * tex.get_width() / float(tex.get_height())
 	var c = _card(ENEMY_TEX[ti] + ".png", w, s.pos, "card", ENEMY_H)
@@ -1315,6 +1371,7 @@ func _partner_busy(s: Dictionary) -> bool:
 
 
 func _spawn_box(s: Dictionary, mega: bool) -> void:
+	_evt("box" + (" mega" if mega else ""))
 	var pos: Vector3 = s.pos
 	if s.name.begins_with("window"):
 		pos.y += 0.74
@@ -1406,6 +1463,7 @@ func _open_box(c: Dictionary) -> void:
 
 # Gegner (oder Box) erledigt – auch von Explosionen
 func _kill_enemy(c: Dictionary, point: Vector3, head: bool) -> void:
+	_evt("hit")
 	if c.get("box", false):
 		_open_box(c)
 		return
@@ -1514,6 +1572,7 @@ func _enemies_update(dt: float) -> void:
 
 
 func _enemy_fire(e: Dictionary) -> void:
+	_evt("enemy shot")
 	_bark(e, "fire", 0.3)
 	var mp = _muzzle(e)
 	_flash(mp + Vector3(0, 0, 0.15), 0.9, Color(1.0, 0.7, 0.35), 7.0)
@@ -1686,6 +1745,7 @@ func _press(p: Vector2, idx: int = 0) -> void:
 
 
 func _shoot(p: Vector2) -> void:
+	_evt("shot " + weapon)
 	var w = weapon
 	if w == "pistol":
 		if ammo <= 0:
@@ -1698,13 +1758,13 @@ func _shoot(p: Vector2) -> void:
 			weapon = "pistol"
 			wpn_ammo = 0
 	shots_fired += 1
-	kick = 1.0 if w != "smg" else 0.45
-	shake = maxf(shake, 0.25 if w == "pistol" else (0.18 if w == "smg" else 0.55))
+	kick = 1.0 if w != "smg" else 0.7
+	shake = maxf(shake, 0.25 if w == "pistol" else (0.3 if w == "smg" else 0.55))
 	match w:
 		"shotgun":
 			_sfx("shotgun", 1.0, 0.04)
 		"smg":
-			_sfx("smg", -2.0, 0.07)
+			_sfx("smg", 2.0, 0.06)
 		"rocket":
 			_sfx("rocket", 1.0, 0.04)
 		_:
@@ -1859,6 +1919,7 @@ func _proj_update(dt: float) -> void:
 
 # Explosion: Feuerball, Rauch, Funken, Licht; erledigt alles im Umkreis
 func _explode(pos: Vector3, radius: float, hurts_player: bool, snd: String = "boom") -> void:
+	_evt("explosion")
 	var dcam = pos.distance_to(cam.global_position)
 	var k = clampf(radius / 3.0, 0.5, 1.4) * (0.45 if dcam < 3.0 else 1.0)
 	_fb_boom(pos, k)
@@ -1911,61 +1972,33 @@ func _car_explode() -> void:
 	tw.tween_property(pv, "position", base + Vector3(0.5, 0.0, -0.9), 0.4).set_ease(Tween.EASE_IN).set_trans(Tween.TRANS_QUAD)
 	tw.parallel().tween_property(pv, "rotation", Vector3(-PI * 0.5, 0.3, 0.12), 0.4)
 	tw.tween_callback(func(): _sfx("target_down", 2.0, 0.0))
-	# Feuer und Rauch bleiben
-	var fire = CPUParticles3D.new()
-	var q = QuadMesh.new()
-	q.size = Vector2(0.35, 0.35)
-	q.material = fx_mat_spark
-	fire.mesh = q
-	fire.amount = 40
-	fire.lifetime = 0.8
-	fire.emission_shape = CPUParticles3D.EMISSION_SHAPE_BOX
-	fire.emission_box_extents = Vector3(0.9, 0.1, 0.4)
-	fire.direction = Vector3.UP
-	fire.spread = 15.0
-	fire.gravity = Vector3(0, 1.5, 0)
-	fire.initial_velocity_min = 0.5
-	fire.initial_velocity_max = 1.4
-	var fg = Gradient.new()
-	fg.set_color(0, Color(2.6, 1.5, 0.4, 0.0))
-	fg.add_point(0.15, Color(2.6, 1.3, 0.35, 0.9))
-	fg.set_color(fg.get_point_count() - 1, Color(0.8, 0.15, 0.02, 0.0))
-	fire.color_ramp = fg
-	var fsc = Curve.new()
-	fsc.add_point(Vector2(0, 1.0))
-	fsc.add_point(Vector2(1, 0.3))
-	fire.scale_amount_curve = fsc
-	add_child(fire)
-	fire.global_position = base + Vector3(0.5, 0.15, -0.6)
-	car_fx.append(fire)
-	var smoke = CPUParticles3D.new()
-	var q2 = QuadMesh.new()
-	q2.size = Vector2(0.9, 0.9)
-	q2.material = fx_mat_dust
-	smoke.mesh = q2
-	smoke.amount = 26
-	smoke.lifetime = 4.5
-	smoke.emission_shape = CPUParticles3D.EMISSION_SHAPE_BOX
-	smoke.emission_box_extents = Vector3(0.7, 0.1, 0.3)
-	smoke.direction = Vector3(0.25, 1, 0)
-	smoke.spread = 12.0
-	smoke.gravity = Vector3(0.15, 0.35, 0)
-	smoke.initial_velocity_min = 0.4
-	smoke.initial_velocity_max = 0.9
-	var ssc = Curve.new()
-	ssc.add_point(Vector2(0, 0.5))
-	ssc.add_point(Vector2(1, 2.6))
-	smoke.scale_amount_curve = ssc
-	var sg = Gradient.new()
-	sg.set_color(0, Color(0.12, 0.1, 0.09, 0.0))
-	sg.add_point(0.15, Color(0.14, 0.12, 0.1, 0.6))
-	sg.set_color(sg.get_point_count() - 1, Color(0.35, 0.3, 0.28, 0.0))
-	smoke.color_ramp = sg
-	add_child(smoke)
-	smoke.global_position = base + Vector3(0.5, 0.6, -0.7)
-	car_fx.append(smoke)
-	car_light.global_position = base + Vector3(0.5, 0.8, 0.2)
-	car_light.light_energy = 1.6
+	# Feuer und Rauch bleiben: laufen über _car_burn() aus echten Bildfolgen
+	car_burn_t = 0.0
+	car_smoke_t = 0.0
+	car_light.global_position = base + Vector3(0.5, 0.9, 0.3)
+	car_light.light_energy = 2.0
+
+
+func _car_burn(dt: float) -> void:
+	if not car_dead or car_card.is_empty():
+		return
+	var base: Vector3 = car_card.base + Vector3(0.5, 0.0, -0.75)
+	car_burn_t -= dt
+	if car_burn_t <= 0.0:
+		car_burn_t = randf_range(0.04, 0.07)
+		var fp = base + Vector3(randf_range(-0.9, 0.9), randf_range(0.5, 0.95), randf_range(-0.1, 0.35))
+		var sz = randf_range(3.0, 4.2)
+		var mi = _fb_quad(["boom0", "boom1", "boom2"][randi() % 3], fp, sz)
+		mi.set_instance_shader_parameter("em", 2.4)
+		fbs.append({"n": mi, "t": 0.0, "dur": randf_range(0.4, 0.6), "g": randf_range(1.2, 1.9), "f0": 2.0, "f1": 8.5})
+	car_smoke_t -= dt
+	if car_smoke_t <= 0.0:
+		car_smoke_t = randf_range(0.28, 0.42)
+		var sp = base + Vector3(randf_range(-0.5, 0.5), 1.0, randf_range(-0.2, 0.1))
+		var sm = _fb_quad("smoke5_dark", sp, randf_range(1.6, 2.4))
+		sm.set_instance_shader_parameter("em", 0.0)
+		fbs.append({"n": sm, "t": 0.0, "dur": randf_range(2.6, 3.4), "g": randf_range(0.8, 1.2), "drift": 0.25})
+	car_light.light_energy = 1.6 + 0.9 * randf() if randf() < 0.5 else car_light.light_energy
 
 
 func _car_reset() -> void:
@@ -2032,9 +2065,13 @@ func _fb_mat(key: String) -> ShaderMaterial:
 		fb_sh.code = FB_SH
 	var m = ShaderMaterial.new()
 	m.shader = fb_sh
-	m.set_shader_parameter("tex", load("res://fx/%s.png" % key))
+	var dark = key.ends_with("_dark")
+	var tkey = key.trim_suffix("_dark")
+	m.set_shader_parameter("tex", load("res://fx/%s.png" % tkey))
 	m.set_shader_parameter("grid", 8.0 if key == "wisp8" else 5.0)
 	m.set_shader_parameter("smk", Vector3(0.85, 0.78, 0.72) if key in ["wisp8", "smoke5"] else Vector3(1, 1, 1))
+	if dark:
+		m.set_shader_parameter("smk", Vector3(0.22, 0.19, 0.17))
 	fb_mats[key] = m
 	return m
 
@@ -2085,7 +2122,10 @@ func _fb_update(dt: float) -> void:
 		var mi: MeshInstance3D = e.n
 		mi.visible = e.t >= 0.0
 		var uu = clampf(u, 0.0, 1.0)
-		mi.set_instance_shader_parameter("fr", uu * 23.999)
+		var f0 = float(e.get("f0", 0.0))
+		mi.set_instance_shader_parameter("fr", f0 + uu * (float(e.get("f1", 23.999)) - f0))
+		if e.has("drift"):
+			mi.global_position += Vector3(float(e.drift) * dt, 0, 0)
 		mi.set_instance_shader_parameter("al", clampf((1.0 - uu) * 3.0, 0.0, 1.0))
 		mi.global_position += Vector3(0, float(e.g) * dt, 0)
 
