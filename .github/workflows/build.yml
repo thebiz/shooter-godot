@@ -1,0 +1,91 @@
+name: Shooter-APK bauen
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  # Signierschlüssel: immer derselbe öffentliche Standard-Testschlüssel aus dem Godot-4.3-Image,
+  # damit sich die Signatur nie ändert und Updates sich einfach drüberinstallieren lassen.
+  key:
+    runs-on: ubuntu-latest
+    container:
+      image: barichello/godot-ci:4.3
+    steps:
+      - run: mkdir -p k && cp /root/debug.keystore k/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: signkey
+          path: k/debug.keystore
+          retention-days: 1
+
+  build:
+    needs: key
+    runs-on: ubuntu-latest
+    container:
+      image: barichello/godot-ci:4.7.2
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: signkey
+          path: /tmp/sign
+
+      - name: Godot einrichten (Vorlagen, Android-SDK)
+        run: |
+          mkdir -p ~/.local/share/godot/export_templates ~/.config
+          cp -r /root/.local/share/godot/export_templates/4.7.2.stable ~/.local/share/godot/export_templates/ || true
+          cp -r /root/.config/godot ~/.config/ || true
+          ls ~/.local/share/godot/export_templates/
+
+      - name: Dateien importieren
+        run: godot --headless --path . --import || godot --headless --path . --editor --quit || true
+
+      - name: Startprüfung (Skriptfehler = kein Build)
+        run: |
+          godot --headless --path . --quit-after 30 > /tmp/run.log 2>&1 || true
+          cat /tmp/run.log | tail -30
+          if grep -E "Parse Error|Failed to load script|SCRIPT ERROR" /tmp/run.log; then exit 1; fi
+
+      - name: Versionsnummer
+        run: |
+          sed -i "s/^version\/code=.*/version\/code=${{ github.run_number }}/" export_presets.cfg
+          sed -i "s/^version\/name=.*/version\/name=\"1.${{ github.run_number }}\"/" export_presets.cfg
+          sed -i '/^config\/version=/d' project.godot
+          sed -i '/^\[application\]/a config/version="1.${{ github.run_number }}"' project.godot
+
+      - name: APK bauen
+        env:
+          ANDROID_HOME: /usr/lib/android-sdk
+          ANDROID_SDK_ROOT: /usr/lib/android-sdk
+          GODOT_ANDROID_KEYSTORE_RELEASE_PATH: /tmp/sign/debug.keystore
+          GODOT_ANDROID_KEYSTORE_RELEASE_USER: androiddebugkey
+          GODOT_ANDROID_KEYSTORE_RELEASE_PASSWORD: android
+        run: |
+          mkdir -p build
+          godot --headless --verbose --path . --export-release "Android" build/Shooter-${{ github.run_number }}.apk > build/export.log 2>&1 || true
+          tail -80 build/export.log
+          test -f build/Shooter-${{ github.run_number }}.apk
+
+      - name: Als Release veröffentlichen
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: Shooter ${{ github.run_number }}
+          files: build/Shooter-${{ github.run_number }}.apk
+          make_latest: true
+
+      - name: Protokoll bei Fehler hochladen
+        if: failure()
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ci-log-${{ github.run_number }}
+          name: CI log ${{ github.run_number }}
+          prerelease: true
+          make_latest: false
+          files: |
+            build/*.log
