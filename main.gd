@@ -30,7 +30,7 @@ const CAM_INTRO = Vector3(0.0, 3.1, 2.6)
 const CAM_INTRO_PITCH = -5.0
 
 const MAG = 8                 # Schuss pro Magazin
-const RELOAD_TIME = 0.75
+const RELOAD_TIME = 0.69
 const KILLS_PER_STAGE = 12
 
 var cam: Camera3D
@@ -52,6 +52,7 @@ var voices = {}
 var bark_cd = 0.0
 var ambience: AudioStreamPlayer
 var music: AudioStreamPlayer
+var reload_player: AudioStreamPlayer
 var music_vol = 0.5
 var music_k = 1.0           # 1 = Menü (laut), 0 = Spiel (leise)
 var motes: CPUParticles3D
@@ -147,6 +148,9 @@ static var upd_done = false
 var autotest = false
 var at_t = 0.0
 var at_step = 0
+var light_pool = []
+var mega_light: OmniLight3D
+var car_light: OmniLight3D
 var img_cache = {}
 var tex_cache = {}
 var warmed = false
@@ -162,6 +166,7 @@ func _ready() -> void:
 	_load_save()
 	_make_shaders()
 	_make_fx_assets()
+	_make_lights()
 	tex_nade = load("res://art/grenade.png")
 	_make_world()
 	_make_sounds()
@@ -463,7 +468,7 @@ func _make_world() -> void:
 
 
 func _make_sounds() -> void:
-	for n in ["music", "boom", "car_boom", "pickup", "mega_appear", "warn", "throw", "shot_player", "shot_enemy", "impact_brick", "impact_metal", "impact_card", "target_up", "target_down", "reload", "empty", "player_hit", "ambience"]:
+	for n in ["music", "boom", "car_boom", "shotgun", "smg", "rocket", "pickup", "mega_appear", "warn", "throw", "shot_player", "shot_enemy", "impact_brick", "impact_metal", "impact_card", "target_up", "target_down", "reload", "empty", "player_hit", "ambience"]:
 		for ext in [".ogg", ".wav"]:
 			var p = "res://sfx/" + n + ext
 			if ResourceLoader.exists(p):
@@ -485,6 +490,9 @@ func _make_sounds() -> void:
 	add_child(ambience)
 	ambience.finished.connect(func(): ambience.play())
 	ambience.play()
+	reload_player = AudioStreamPlayer.new()
+	reload_player.volume_db = -1.0
+	add_child(reload_player)
 	music = AudioStreamPlayer.new()
 	music.stream = sounds.get("music")
 	add_child(music)
@@ -1173,6 +1181,7 @@ func _process(dt: float) -> void:
 	_enemies_update(dt)
 	_proj_update(dt)
 	_fb_update(dt)
+	_lights_update(dt)
 	_camera_update(dt)
 	if autotest:
 		_autotest(dt)
@@ -1182,16 +1191,20 @@ func _process(dt: float) -> void:
 func _play_update(dt: float) -> void:
 	if break_t > 0.0:
 		break_t -= dt
-		if not break_reload and break_t < 1.7:
+		if not break_reload and break_t < 1.9:
 			break_reload = true
-			_round_setup()
-			_sfx("reload", 0.0, 0.0)
+			reload_player.stream = sounds.get("reload")
+			reload_player.play()
+		if break_reload and break_t < 1.9 - RELOAD_TIME and round_kills >= round_goal:
+			_round_setup()   # genau mit dem Schlitten-Klick ist die Waffe voll
 		return
 	# Nachladen nur in Deckung
 	if cover and ammo < MAG and reserve > 0:
 		if reload_t <= 0:
 			reload_t = RELOAD_TIME
-			_sfx("reload", -3.0, 0.03)
+			reload_player.stream = sounds.get("reload")
+			reload_player.pitch_scale = 1.0
+			reload_player.play()
 		reload_t -= dt
 		if reload_t <= 0:
 			var take = mini(MAG - ammo, reserve)
@@ -1199,13 +1212,15 @@ func _play_update(dt: float) -> void:
 			reserve -= take
 			reload_t = 0.0
 	elif not cover:
+		if reload_t > 0.0:
+			reload_player.stop()   # Nachladen abgebrochen, also auch kein Klick
 		reload_t = 0.0
 	# Maschinengewehr: Feuerknopf halten = Dauerfeuer
 	if weapon == "smg" and fire_idx >= 0 and not cover:
 		auto_t -= dt
 		if auto_t <= 0.0:
 			_shoot(aim)
-			auto_t = 0.09
+			auto_t = 0.085
 	# zu lange in Deckung: ein Gegner wirft eine Granate über die Mauer
 	if not _frozen():
 		if cover:
@@ -1314,13 +1329,6 @@ func _spawn_box(s: Dictionary, mega: bool) -> void:
 	_sfx("target_up", -4.0, 0.12)
 	if mega:
 		_sfx("mega_appear", -2.0, 0.0)
-		var l = OmniLight3D.new()
-		l.light_color = Color(1.0, 0.78, 0.3)
-		l.omni_range = 2.6
-		l.light_energy = 2.5
-		l.position = Vector3(0, c.h * 0.5, 0.35)
-		c.mi.add_child(l)
-		c.glow = l
 		var sp = CPUParticles3D.new()
 		var q = QuadMesh.new()
 		q.size = Vector2(0.05, 0.05)
@@ -1455,8 +1463,6 @@ func _enemies_update(dt: float) -> void:
 					if e.mega:
 						var pu = 0.5 + 0.5 * sin(e.t * 9.0)
 						e.mat.set_shader_parameter("flash", 0.12 + 0.22 * pu)
-						if e.has("glow") and is_instance_valid(e.glow):
-							e.glow.light_energy = 1.5 + 2.5 * pu
 					if e.t > e.life and state == "play":
 						e.state = "hide"
 						e.t = 0.0
@@ -1668,7 +1674,7 @@ func _press(p: Vector2, idx: int = 0) -> void:
 				_throw_grenade()
 			elif p.distance_to(_fire_center()) < 105:
 				fire_idx = idx
-				auto_t = 0.09
+				auto_t = 0.085
 				if not cover:
 					_shoot(aim)
 			elif aim_idx < 0:
@@ -1696,13 +1702,11 @@ func _shoot(p: Vector2) -> void:
 	shake = maxf(shake, 0.25 if w == "pistol" else (0.18 if w == "smg" else 0.55))
 	match w:
 		"shotgun":
-			_sfx("shot_player", 3.0, 0.05)
-			_sfx("shot_enemy", 0.0, 0.05)
+			_sfx("shotgun", 1.0, 0.04)
 		"smg":
-			_sfx("shot_player", -5.0, 0.12)
+			_sfx("smg", -2.0, 0.07)
 		"rocket":
-			_sfx("throw", 2.0, 0.05)
-			_sfx("shot_enemy", -2.0, 0.05)
+			_sfx("rocket", 1.0, 0.04)
 		_:
 			_sfx("shot_player", -1.0, 0.06)
 	# anfliegende Gegner-Granate abschießen?
@@ -1861,15 +1865,7 @@ func _explode(pos: Vector3, radius: float, hurts_player: bool, snd: String = "bo
 	fx_k = clampf(dcam / 7.0, 0.22, 1.3)
 	_sparks(pos, Vector3.UP, 30)
 	_chunks(pos, Vector3.UP, 18, [Color(0.35, 0.3, 0.26), Color(0.6, 0.45, 0.3), Color(0.2, 0.18, 0.16)], 0.06, 1.0)
-	var l = OmniLight3D.new()
-	l.position = pos + Vector3(0, 0.8, 0.5)
-	l.omni_range = 9.0
-	l.light_color = Color(1.0, 0.6, 0.25)
-	l.light_energy = 9.0
-	add_child(l)
-	var tw = create_tween()
-	tw.tween_property(l, "light_energy", 0.0, 0.55)
-	tw.tween_callback(l.queue_free)
+	_flash_light(pos + Vector3(0, 0.8, 0.5), 9.0, Color(1.0, 0.6, 0.25), 9.0, 0.55)
 	_sfx(snd, 2.0 if dcam > 4.0 else 4.0, 0.06)
 	shake = maxf(shake, clampf(1.5 - dcam / 14.0, 0.35, 1.3))
 	if hurts_player:
@@ -1968,16 +1964,13 @@ func _car_explode() -> void:
 	add_child(smoke)
 	smoke.global_position = base + Vector3(0.5, 0.6, -0.7)
 	car_fx.append(smoke)
-	var fl = OmniLight3D.new()
-	fl.light_color = Color(1.0, 0.55, 0.2)
-	fl.omni_range = 4.0
-	fl.light_energy = 1.6
-	add_child(fl)
-	fl.global_position = base + Vector3(0.5, 0.8, 0.2)
-	car_fx.append(fl)
+	car_light.global_position = base + Vector3(0.5, 0.8, 0.2)
+	car_light.light_energy = 1.6
 
 
 func _car_reset() -> void:
+	if car_light != null:
+		car_light.light_energy = 0.0
 	for n in car_fx:
 		if is_instance_valid(n):
 			n.queue_free()
@@ -2361,18 +2354,63 @@ func _flash(pos: Vector3, size: float, col: Color, energy: float) -> void:
 	_flash_light(pos, 6.0, col, energy)
 
 
-func _flash_light(pos: Vector3, rng: float, col: Color, energy: float) -> void:
-	var l = OmniLight3D.new()
+func _make_lights() -> void:
+	for i in 8:
+		var l = OmniLight3D.new()
+		l.shadow_enabled = false
+		l.omni_attenuation = 1.4
+		l.light_energy = 0.0
+		l.position = Vector3(0, -50, 0)
+		add_child(l)
+		light_pool.append({"l": l, "t": 0.0, "dur": 0.1, "e0": 0.0})
+	mega_light = OmniLight3D.new()
+	mega_light.light_color = Color(1.0, 0.78, 0.3)
+	mega_light.omni_range = 2.6
+	mega_light.light_energy = 0.0
+	mega_light.position = Vector3(0, -50, 0)
+	add_child(mega_light)
+	car_light = OmniLight3D.new()
+	car_light.light_color = Color(1.0, 0.55, 0.2)
+	car_light.omni_range = 4.0
+	car_light.light_energy = 0.0
+	car_light.position = Vector3(0, -50, 0)
+	add_child(car_light)
+
+
+func _flash_light(pos: Vector3, rng: float, col: Color, energy: float, dur: float = 0.09) -> void:
+	# das Licht, das am längsten frei ist, wird wiederverwendet
+	var best = light_pool[0]
+	for f in light_pool:
+		if f.t >= f.dur:
+			best = f
+			break
+		if f.t / f.dur > best.t / best.dur:
+			best = f
+	var l: OmniLight3D = best.l
 	l.position = pos
 	l.omni_range = rng
 	l.light_color = col
 	l.light_energy = energy
-	l.omni_attenuation = 1.4
-	l.shadow_enabled = false
-	add_child(l)
-	var tw = create_tween()
-	tw.tween_property(l, "light_energy", 0.0, 0.09)
-	tw.tween_callback(l.queue_free)
+	best.t = 0.0
+	best.dur = dur
+	best.e0 = energy
+
+
+func _lights_update(dt: float) -> void:
+	for f in light_pool:
+		if f.t < f.dur:
+			f.t += dt
+			f.l.light_energy = f.e0 * maxf(0.0, 1.0 - f.t / f.dur)
+	# goldener Schein der Mega-Box
+	var mb = {}
+	for e in enemies:
+		if e.get("mega", false) and e.state != "fall" and is_instance_valid(e.mi):
+			mb = e
+	if mb.is_empty():
+		mega_light.light_energy = 0.0
+	else:
+		mega_light.global_position = mb.mi.global_transform * Vector3(0, mb.h * 0.5, 0.35)
+		mega_light.light_energy = 1.5 + 2.5 * (0.5 + 0.5 * sin(mb.t * 9.0)) if mb.state == "aim" else 1.5
 
 
 func _float_text(pos: Vector3, s: String, big: bool) -> void:
@@ -2589,7 +2627,7 @@ func _autotest(dt: float) -> void:
 		at_step = 130
 	elif at_step == 130 and at_t > 10.5:
 		_snap("10_megabox")
-		var bx = enemies[-1]
+		var bx = enemies.filter(func(x): return x.get("box", false))[-1]
 		aim = cam.unproject_position(bx.mi.global_transform * Vector3(0, bx.h * 0.5, 0))
 		_shoot(aim)
 		print("BOX weapon=", weapon, " grenades=", grenades, " health=", health)
