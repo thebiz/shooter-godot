@@ -53,6 +53,7 @@ var bark_cd = 0.0
 var ambience: AudioStreamPlayer
 var music: AudioStreamPlayer
 var music_vol = 0.5
+var music_k = 1.0           # 1 = Menü (laut), 0 = Spiel (leise)
 var motes: CPUParticles3D
 
 # Spielzustand
@@ -439,7 +440,7 @@ func _make_world() -> void:
 
 
 func _make_sounds() -> void:
-	for n in ["music", "boom", "pickup", "mega_appear", "warn", "throw", "shot_player", "shot_enemy", "impact_brick", "impact_metal", "impact_card", "target_up", "target_down", "reload", "empty", "player_hit", "ambience"]:
+	for n in ["music", "boom", "car_boom", "pickup", "mega_appear", "warn", "throw", "shot_player", "shot_enemy", "impact_brick", "impact_metal", "impact_card", "target_up", "target_down", "reload", "empty", "player_hit", "ambience"]:
 		for ext in [".ogg", ".wav"]:
 			var p = "res://sfx/" + n + ext
 			if ResourceLoader.exists(p):
@@ -473,7 +474,9 @@ func _make_sounds() -> void:
 func _music_apply() -> void:
 	if music == null:
 		return
-	music.volume_db = -80.0 if music_vol <= 0.01 else linear_to_db(music_vol) - 9.0
+	# im Menü und nach Game Over voll, während der Runde leiser, damit man Schüsse und Stimmen hört
+	var v = music_vol * lerpf(0.3, 1.0, music_k)
+	music.volume_db = -80.0 if v <= 0.005 else linear_to_db(v) - 4.0
 
 
 # Spruch eines Gegners, kommt räumlich von seiner Position
@@ -1000,6 +1003,9 @@ func _process(dt: float) -> void:
 	hit_mark = maxf(0.0, hit_mark - dt * 3.0)
 	vignette.modulate.a = hurt
 	panel_k = move_toward(panel_k, 1.0 if (panel_open and state == "play") else 0.0, dt / 0.18)
+	var mk_target = 0.0 if (state == "play" or state == "intro") else 1.0
+	music_k = move_toward(music_k, mk_target, dt / (1.2 if mk_target < music_k else 3.0))
+	_music_apply()
 	if state != "play":
 		editing = false
 	# Snap: Fadenkreuz gleitet auf die Zone in Daumenrichtung und schwankt dort leicht wie eine ruhige Hand
@@ -1687,7 +1693,7 @@ func _proj_update(dt: float) -> void:
 
 
 # Explosion: Feuerball, Rauch, Funken, Licht; erledigt alles im Umkreis
-func _explode(pos: Vector3, radius: float, hurts_player: bool) -> void:
+func _explode(pos: Vector3, radius: float, hurts_player: bool, snd: String = "boom") -> void:
 	var dcam = pos.distance_to(cam.global_position)
 	var k = clampf(radius / 3.0, 0.5, 1.4) * (0.45 if dcam < 3.0 else 1.0)
 	_fb_boom(pos, k)
@@ -1703,7 +1709,7 @@ func _explode(pos: Vector3, radius: float, hurts_player: bool) -> void:
 	var tw = create_tween()
 	tw.tween_property(l, "light_energy", 0.0, 0.55)
 	tw.tween_callback(l.queue_free)
-	_sfx("boom", 2.0 if dcam > 4.0 else 4.0, 0.1)
+	_sfx(snd, 2.0 if dcam > 4.0 else 4.0, 0.06)
 	shake = maxf(shake, clampf(1.5 - dcam / 14.0, 0.35, 1.3))
 	if hurts_player:
 		health -= 35.0
@@ -1734,7 +1740,7 @@ func _car_explode() -> void:
 		if s.name == "car":
 			s.off = true
 	var cp: Vector3 = car_card.pv.global_position + Vector3(0, 0.6, 0.3)
-	_explode(cp, 3.2, false)
+	_explode(cp, 3.2, false, "car_boom")
 	_fb_boom(cp + Vector3(0, 0.6, 0), 1.6)
 	score += 300
 	_float_text(cp + Vector3(0, 1.4, 0), "CAR  +300", true)
