@@ -77,7 +77,10 @@ var msg_t = 0.0
 var msg_sub = ""
 var msg_dur = 1.0
 var tip_t = 0.0
-var touch_start = {}
+var aim_idx = -1
+var thumb = Vector2.ZERO
+var thumb0 = Vector2.ZERO
+const AIM_SENS = 1.7
 var holes_live = []
 var shots_fired = 0
 var fx_k = 1.0
@@ -325,16 +328,14 @@ func _make_world() -> void:
 	im.albedo_texture = gt
 	im.roughness = 1.0
 	inner.material_override = im
-	var ip = Node3D.new()
-	ip.position = Vector3(0, FAC_Y, FAC_Z - 0.85)
-	add_child(ip)
-	ip.add_child(inner)
-	cards.append({"pv": ip, "mi": inner, "mat": im, "img": null, "w": FAC_W, "h": fac_h, "kind": "room", "t": 99.0, "delay": 0.0, "up": true, "follow": 1})
-
 	# Kulissen (Reihenfolge = Reihenfolge beim Aufklappen)
 	var fac = _card("facade.png", FAC_W, Vector3(0, FAC_Y, FAC_Z), "brick")
 	fac.delay = 0.0
 	cards.append(fac)
+	# der dunkle Raum hängt an der Fassade und klappt mit ihr hoch (kein schwarzer Kasten vorher)
+	inner.position = Vector3(0, 0, -0.85)
+	fac.pv.add_child(inner)
+	cards.append({"pv": fac.pv, "mi": inner, "mat": im, "img": null, "w": FAC_W, "h": fac_h, "kind": "room", "t": 99.0, "delay": 0.0, "up": true, "static": true})
 	var tree = _card("tree.png", 7.2, Vector3(-7.4, -0.05, -9.6), "leaf")
 	tree.delay = 0.25
 	cards.append(tree)
@@ -360,13 +361,13 @@ func _make_world() -> void:
 		var x = ((hh[0] + hh[1]) * 0.5 - 0.5) * FAC_W
 		var ybot = FAC_Y + (1.0 - hh[3]) * fac_h
 		if i == 6:   # Haustür: ganze Figur
-			slots.append({"pos": Vector3(x, ybot, FAC_Z - 0.3), "mode": "turn", "busy": false, "name": "door"})
+			slots.append({"pos": Vector3(x, ybot, FAC_Z - 0.3), "mode": "flip", "busy": false, "name": "door"})
 		else:
-			slots.append({"pos": Vector3(x, ybot - 0.74, FAC_Z - 0.32), "mode": "turn", "busy": false, "name": "window%d" % i})
-	slots.append({"pos": Vector3(-2.55, 0.0, -7.4), "mode": "turn", "busy": false, "name": "crates"})
+			slots.append({"pos": Vector3(x, ybot - 0.74, FAC_Z - 0.32), "mode": "flip", "busy": false, "name": "window%d" % i})
+	slots.append({"pos": Vector3(-2.55, 0.0, -7.4), "mode": "flip", "busy": false, "name": "crates"})
 	slots.append({"pos": Vector3(4.25, 0.28, -8.75), "mode": "flip", "busy": false, "name": "car"})
 	slots.append({"pos": Vector3(6.35, 0.12, -8.0), "mode": "flip", "busy": false, "name": "hedge"})
-	slots.append({"pos": Vector3(-6.75, 0.0, -9.95), "mode": "turn", "busy": false, "name": "tree"})
+	slots.append({"pos": Vector3(-6.75, 0.0, -9.95), "mode": "flip", "busy": false, "name": "tree"})
 
 	# Staubkörnchen im Abendlicht
 	motes = CPUParticles3D.new()
@@ -485,9 +486,14 @@ func _text(c: Control, pos: Vector2, s: String, size: int, col: Color = Color.WH
 	c.draw_string(f, pos, s, align, w, size, col)
 
 
-func _cover_btn_rect() -> Rect2:
+func _thumb_home() -> Vector2:
 	var vs = _vs()
-	return Rect2(28, vs.y - 148, 120, 120)
+	return Vector2(vs.x * 0.2, vs.y * 0.64)
+
+
+func _fire_center() -> Vector2:
+	var vs = _vs()
+	return Vector2(vs.x - 150, vs.y - 215)
 
 
 func _upd_btn_rect() -> Rect2:
@@ -557,24 +563,30 @@ func _hud_draw(c: Control) -> void:
 		_text(c, Vector2(vs.x - 92, vs.y - 43), "%d" % ammo, 34, Color.WHITE, HORIZONTAL_ALIGNMENT_RIGHT, 56)
 		_text(c, Vector2(vs.x - 34, vs.y - 43), "/%d" % MAG, 17, Color(1, 1, 1, 0.55), HORIZONTAL_ALIGNMENT_LEFT, -1, font_light)
 	if state == "play":
-		# Deckungs-Knopf unten links
-		var r = _cover_btn_rect()
-		var ctr = r.get_center()
-		c.draw_circle(ctr, r.size.x * 0.5, Color(0.06, 0.05, 0.05, 0.55 if not cover else 0.8))
-		c.draw_arc(ctr, r.size.x * 0.5, 0, TAU, 48, Color(1, 1, 1, 0.35 if not cover else 0.9), 2.5, true)
-		# Schild-Symbol
-		var s = 0.9
-		var pts = PackedVector2Array([ctr + Vector2(0, -30) * s, ctr + Vector2(24, -20) * s, ctr + Vector2(22, 6) * s, ctr + Vector2(0, 28) * s, ctr + Vector2(-22, 6) * s, ctr + Vector2(-24, -20) * s, ctr + Vector2(0, -30) * s])
-		c.draw_polyline(pts, Color.WHITE, 3.0, true)
-		_text(c, ctr + Vector2(-60, 46), "UP" if cover else "COVER", 15, Color(1, 1, 1, 0.85), HORIZONTAL_ALIGNMENT_CENTER, 120, font_light)
+		# linkes Daumenfeld: halten = aufstehen und zielen
+		var tc = thumb if aim_idx >= 0 else _thumb_home()
+		var held = aim_idx >= 0
+		c.draw_circle(tc, 62, Color(0.06, 0.05, 0.05, 0.4 if held else 0.3))
+		c.draw_arc(tc, 62, 0, TAU, 48, Color(1, 1, 1, 0.7 if held else 0.35), 2.5, true)
+		c.draw_circle(tc, 20, Color(1, 1, 1, 0.55 if held else 0.25))
+		if not held:
+			_text(c, tc + Vector2(-90, 92), "HOLD TO AIM", 15, Color(1, 1, 1, 0.75), HORIZONTAL_ALIGNMENT_CENTER, 180, font_light)
+		# Feuerknopf rechts
+		var fc = _fire_center()
+		var can = not cover
+		c.draw_circle(fc, 70, Color(0.55, 0.08, 0.04, 0.55 if can else 0.25))
+		c.draw_arc(fc, 70, 0, TAU, 48, Color(1, 0.75, 0.6, 0.85 if can else 0.3), 3.0, true)
+		for d in [Vector2(1, 0), Vector2(-1, 0), Vector2(0, 1), Vector2(0, -1)]:
+			c.draw_line(fc + d * 12, fc + d * 30, Color(1, 1, 1, 0.9 if can else 0.35), 3.0, true)
+		c.draw_arc(fc, 21, 0, TAU, 32, Color(1, 1, 1, 0.9 if can else 0.35), 3.0, true)
 		if ammo == 0 and not cover and reload_t <= 0:
 			var bl = 0.55 + 0.45 * sin(st_t * 10.0)
-			_text(c, Vector2(0, vs.y * 0.66), "RELOAD  –  TAKE COVER", 30, Color(1, 0.85, 0.4, bl), HORIZONTAL_ALIGNMENT_CENTER, vs.x)
+			_text(c, Vector2(0, vs.y * 0.66), "RELOAD  –  LET GO TO TAKE COVER", 30, Color(1, 0.85, 0.4, bl), HORIZONTAL_ALIGNMENT_CENTER, vs.x)
 		if cover and reload_t > 0:
 			_text(c, Vector2(0, vs.y * 0.62), "RELOADING", 24, Color(1, 1, 1, 0.8), HORIZONTAL_ALIGNMENT_CENTER, vs.x, font_light)
 		if tip_t > 0:
 			var ta = clampf(tip_t, 0, 1)
-			_text(c, Vector2(0, vs.y - 40), "Tap to shoot  ·  swipe down or press COVER to hide and reload  ·  swipe up to pop out", 17, Color(1, 1, 1, 0.8 * ta), HORIZONTAL_ALIGNMENT_CENTER, vs.x, font_light)
+			_text(c, Vector2(0, vs.y - 30), "Left thumb: hold to stand up and drag to aim  ·  let go to take cover and reload  ·  right: FIRE", 17, Color(1, 1, 1, 0.8 * ta), HORIZONTAL_ALIGNMENT_CENTER, vs.x, font_light)
 	# große Meldungen
 	if msg_t > 0 and msg != "":
 		var a = clampf(msg_t * 2.5, 0, 1)
@@ -656,11 +668,13 @@ func _start_game() -> void:
 	stage = 1
 	ammo = MAG
 	reload_t = 0.0
-	cover = false
+	cover = true
+	aim_idx = -1
+	aim = _vs() * Vector2(0.5, 0.45)
 	spawn_t = 2.6
 	shots_fired = 0
 	hits = 0
-	tip_t = 7.0 if best == 0 else 0.0
+	tip_t = 7.0
 	_set_state("intro")
 	_show_msg("GET READY", "", 2.2)
 
@@ -876,14 +890,30 @@ func _enemy_fire(e: Dictionary) -> void:
 
 
 func _wall_hit() -> void:
-	var vs = _vs()
-	var top = cam.unproject_position(wall.mi.global_transform * Vector3(0, wall.h * 0.9, 0))
-	for i in 6:
-		var sp = Vector2(randf_range(0.12, 0.88) * vs.x, clampf(top.y + randf_range(4.0, 60.0), 0, vs.y - 4))
-		var hit = _pick(sp, [wall])
-		if hit.is_empty():
+	# Die Kugel kommt von vorn: sie schlägt oben auf der Mauerkrone ein, nie auf unserer Seite
+	var img: Image = wall.img
+	for i in 8:
+		var wx = cam.global_position.x + randf_range(-1.0, 1.0)
+		var lx = wx - wall.pv.global_position.x
+		var u = lx / wall.w + 0.5
+		if u < 0.02 or u > 0.98:
 			continue
-		_impact(hit, true)
+		var px = clampi(int(u * img.get_width()), 0, img.get_width() - 1)
+		var vt = -1.0
+		for py in img.get_height():
+			if img.get_pixel(px, py).a > 0.5:
+				vt = float(py) / img.get_height()
+				break
+		if vt < 0 or vt > 0.5:
+			continue
+		var lp = Vector3(lx, (1.0 - vt) * wall.h - 0.015, -0.04)
+		var p: Vector3 = wall.mi.global_transform * lp
+		var n = Vector3(randf_range(-0.3, 0.3), 1.0, 0.45).normalized()
+		fx_k = clampf(p.distance_to(cam.global_position) / 7.0, 0.22, 1.3)
+		_sparks(p, n, 10)
+		_dust(p, n, 6, Color(0.78, 0.64, 0.5), 0.35)
+		_chunks(p, n, 10, [Color(0.6, 0.33, 0.22), Color(0.82, 0.74, 0.62), Color(0.45, 0.3, 0.22)], 0.035)
+		_sfx("impact_brick", -3.0, 0.15)
 		return
 
 
@@ -930,21 +960,19 @@ func _camera_update(dt: float) -> void:
 func _input(ev: InputEvent) -> void:
 	if ev is InputEventScreenTouch:
 		if ev.pressed:
-			touch_start[ev.index] = {"p": ev.position, "t": Time.get_ticks_msec()}
-			_press(ev.position)
-		else:
-			if touch_start.has(ev.index):
-				var s = touch_start[ev.index]
-				var d: Vector2 = ev.position - s.p
-				if state == "play" and Time.get_ticks_msec() - s.t < 450 and absf(d.y) > 70 and absf(d.y) > absf(d.x) * 1.3:
-					cover = d.y > 0
-				touch_start.erase(ev.index)
-	elif ev is InputEventKey and ev.pressed and not ev.echo:
-		if ev.keycode == KEY_SPACE and state == "play":
-			cover = not cover
+			_press(ev.position, ev.index)
+		elif ev.index == aim_idx:
+			# Daumen weg: zurück in Deckung (lädt automatisch nach)
+			aim_idx = -1
+			cover = true
+	elif ev is InputEventScreenDrag:
+		if ev.index == aim_idx and state == "play":
+			var vs = _vs()
+			aim = (aim + ev.relative * AIM_SENS).clamp(Vector2(20, 20), vs - Vector2(20, 20))
+			thumb = ev.position
 
 
-func _press(p: Vector2) -> void:
+func _press(p: Vector2, idx: int = 0) -> void:
 	match state:
 		"title":
 			if st_t < 0.6:
@@ -965,13 +993,14 @@ func _press(p: Vector2) -> void:
 			_open_book(0.45)
 			_start_game()
 		"play":
-			if _cover_btn_rect().grow(16).has_point(p):
-				cover = not cover
-				return
-			aim = p
-			if cover:
-				return
-			_shoot(p)
+			if p.x < _vs().x * 0.5:
+				# linker Daumen drauf: aufstehen, ziehen bewegt das Fadenkreuz
+				aim_idx = idx
+				thumb = p
+				thumb0 = p
+				cover = false
+			elif not cover:
+				_shoot(aim)
 
 
 func _shoot(p: Vector2) -> void:
@@ -985,7 +1014,8 @@ func _shoot(p: Vector2) -> void:
 	_sfx("shot_player", -1.0, 0.06)
 	# Mündungslicht der eigenen Waffe (rechts unten) erhellt kurz die Mauer
 	_flash_light(cam.global_transform * Vector3(0.35, -0.3, -0.6), 3.5, Color(1.0, 0.72, 0.4), 3.0)
-	var hit = _pick(p, null)
+	var targets = (cards + enemies).filter(func(x): return x != wall)
+	var hit = _pick(p, targets)
 	if hit.is_empty():
 		return
 	var c = hit.card
@@ -1344,6 +1374,9 @@ func _autotest(dt: float) -> void:
 	elif at_step == 3 and at_t > 5.3:
 		spawn_t = 999.0
 		tip_t = 0.0
+		cover = false
+		aim_idx = 99
+		thumb = _thumb_home() + Vector2(30, -20)
 		for n in ["window0", "door", "car", "crates", "hedge", "window4"]:
 			var e = _force_enemy(n)
 			e.aim = 99.0
@@ -1356,14 +1389,16 @@ func _autotest(dt: float) -> void:
 		# auf den Gegner an der Tür schießen
 		for e in enemies:
 			if e.slot.name == "door":
-				var sp = cam.unproject_position(e.mi.global_transform * Vector3(0, e.h * 0.55, 0))
-				_press(sp)
+				aim = cam.unproject_position(e.mi.global_transform * Vector3(0, e.h * 0.55, 0))
+				_shoot(aim)
 		at_step = 6
 	elif at_step == 6 and at_t > 6.68:
 		_snap("05_shot_hit")
 		# Mauer und Fassade treffen
-		_press(_vs() * Vector2(0.3, 0.9))
-		_press(_vs() * Vector2(0.62, 0.3))
+		aim = _vs() * Vector2(0.26, 0.6)
+		_shoot(aim)
+		aim = _vs() * Vector2(0.62, 0.3)
+		_shoot(aim)
 		at_step = 7
 	elif at_step == 7 and at_t > 6.75:
 		_snap("06_impacts")
@@ -1376,6 +1411,7 @@ func _autotest(dt: float) -> void:
 	elif at_step == 9 and at_t > 7.36:
 		_snap("07_enemy_fire")
 		cover = true
+		aim_idx = -1
 		at_step = 10
 	elif at_step == 10 and at_t > 8.0:
 		_wall_hit()
