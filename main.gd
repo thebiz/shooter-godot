@@ -84,13 +84,15 @@ var thumb0 = Vector2.ZERO
 var aim_sens = 1.7          # Grundempfindlichkeit
 var aim_accel = 1.0         # Beschleunigung bei schnellen Daumenbewegungen
 var recenter = 0.6          # wie schnell das Fadenkreuz beim Loslassen zur Mitte gleitet (0 = aus)
+var aim_assist = 0.35       # Zielhilfe: bremsen über Gegnern, sanftes Ziehen, knappe Fehlschüsse zählen
 var thumb_n = Vector2(0.2, 0.64)    # Daumenfeld (Anteil der Bildschirmgröße)
 var fire_n = Vector2(0.906, 0.7)    # Feuerknopf
 const PANEL_W = 300.0
 const SLIDERS = [
 	{"label": "AIM SPEED", "key": "aim_sens", "min": 0.6, "max": 3.5},
 	{"label": "ACCELERATION", "key": "aim_accel", "min": 0.0, "max": 3.0},
-	{"label": "RETURN TO CENTER", "key": "recenter", "min": 0.0, "max": 1.0}]
+	{"label": "RETURN TO CENTER", "key": "recenter", "min": 0.0, "max": 1.0},
+	{"label": "AIM ASSIST", "key": "aim_assist", "min": 0.0, "max": 1.0}]
 var panel_open = false
 var panel_k = 0.0
 var editing = false
@@ -521,17 +523,17 @@ func _tab_rect() -> Rect2:
 
 func _panel_rect() -> Rect2:
 	var vs = _vs()
-	return Rect2(vs.x - PANEL_W * panel_k, 74, PANEL_W, 372)
+	return Rect2(vs.x - PANEL_W * panel_k, 74, PANEL_W, 404)
 
 
 func _slider_rect(i: int) -> Rect2:
 	var pr = _panel_rect()
-	return Rect2(pr.position.x + 22, pr.position.y + 18 + i * 80 + 40, PANEL_W - 44, 26)
+	return Rect2(pr.position.x + 22, pr.position.y + 16 + i * 66 + 34, PANEL_W - 44, 26)
 
 
 func _panel_btn_rect(i: int) -> Rect2:
 	var pr = _panel_rect()
-	return Rect2(pr.position.x + 22, pr.position.y + 268 + i * 54, PANEL_W - 44, 44)
+	return Rect2(pr.position.x + 22, pr.position.y + 296 + i * 54, PANEL_W - 44, 44)
 
 
 func _done_btn_rect() -> Rect2:
@@ -578,6 +580,7 @@ func _ui_press(p: Vector2, idx: int) -> bool:
 			aim_sens = 1.7
 			aim_accel = 1.0
 			recenter = 0.6
+			aim_assist = 0.35
 			thumb_n = Vector2(0.2, 0.64)
 			fire_n = Vector2(0.906, 0.7)
 			_save()
@@ -736,7 +739,7 @@ func _settings_draw(c: Control) -> void:
 			var val: float = get(sd.key)
 			var k = clampf((val - sd.min) / (sd.max - sd.min), 0, 1)
 			var vt: String
-			if sd.key == "recenter":
+			if sd.key == "recenter" or sd.key == "aim_assist":
 				vt = "OFF" if val <= 0.001 else "%d %%" % roundi(val * 100.0)
 			elif sd.key == "aim_accel":
 				vt = "OFF" if val <= 0.001 else "%.1f" % val
@@ -1153,7 +1156,20 @@ func _input(ev: InputEvent) -> void:
 			# Beschleunigung: langsame Bewegung bleibt fein, schnelle trägt weiter
 			var v = ev.velocity.length()
 			var gain = aim_sens * (1.0 + aim_accel * clampf((v - 250.0) / 1300.0, 0.0, 1.6))
-			aim = (aim + ev.relative * gain).clamp(Vector2(20, 20), vs - Vector2(20, 20))
+			var tg = _assist_nearest(aim, 2.2)
+			if not tg.is_empty() and aim_assist > 0.0:
+				# 1) über einem Gegner bremst das Fadenkreuz etwas ab
+				if tg.d < tg.r * 1.25:
+					gain *= 1.0 - 0.5 * aim_assist
+			var mv: Vector2 = ev.relative * gain
+			aim += mv
+			if not tg.is_empty() and aim_assist > 0.0:
+				# 2) nur während der Bewegung ein Hauch Zug Richtung Gegner
+				var to: Vector2 = tg.sp - aim
+				var pull = minf(mv.length() * 0.3 * aim_assist, to.length())
+				if to.length() > 1.0:
+					aim += to.normalized() * pull
+			aim = aim.clamp(Vector2(20, 20), vs - Vector2(20, 20))
 			thumb = ev.position
 
 
@@ -1204,6 +1220,13 @@ func _shoot(p: Vector2) -> void:
 	_flash_light(cam.global_transform * Vector3(0.35, -0.3, -0.6), 3.5, Color(1.0, 0.72, 0.4), 3.0)
 	var targets = (cards + enemies).filter(func(x): return x != wall)
 	var hit = _pick(p, targets)
+	# 3) knapp neben der Figur zählt noch als Treffer
+	var hit_enemy = not hit.is_empty() and hit.card.kind == "card" and enemies.has(hit.card) and hit.card.state != "fall"
+	if not hit_enemy and aim_assist > 0.0:
+		var tg = _assist_nearest(p, 1.2 + 1.5 * aim_assist)
+		if not tg.is_empty():
+			var e = tg.e
+			hit = {"card": e, "point": e.mi.global_transform * tg.lp, "uv": Vector2(0.5, 1.0 - tg.lp.y / e.h), "local": tg.lp, "normal": e.mi.global_transform.basis.z.normalized()}
 	if hit.is_empty():
 		return
 	var c = hit.card
@@ -1226,6 +1249,29 @@ func _shoot(p: Vector2) -> void:
 			_show_msg("STAGE %d" % stage, "+25 HEALTH", 2.2)
 	else:
 		_impact(hit, true)
+
+
+# Zielhilfe: nächster sichtbarer Gegner um einen Bildschirmpunkt (Brustbereich, Radius in Bildpunkten)
+func _assist_nearest(p: Vector2, reach: float) -> Dictionary:
+	var best_t = {}
+	var bd = 1e9
+	for e in enemies:
+		if e.state == "fall" or e.state == "hide" or not is_instance_valid(e.mi):
+			continue
+		if e.state == "appear" and e.t < 0.3:
+			continue
+		var lp = Vector3(0.0, (1.0 - e.gun_v - 0.04) * e.h, 0.0)
+		var wp: Vector3 = e.mi.global_transform * lp
+		if cam.is_position_behind(wp):
+			continue
+		var sp = cam.unproject_position(wp)
+		var top = cam.unproject_position(e.mi.global_transform * (lp + Vector3(0, e.h * 0.17, 0)))
+		var r = maxf(14.0, sp.distance_to(top))
+		var d = p.distance_to(sp)
+		if d < r * reach and d < bd:
+			bd = d
+			best_t = {"e": e, "sp": sp, "r": r, "d": d, "lp": lp}
+	return best_t
 
 
 # Strahl vom Bildschirmpunkt in die Szene: vorderste undurchsichtige Pappe
@@ -1484,6 +1530,7 @@ func _load_save() -> void:
 		aim_sens = float(c.get_value("ctrl", "aim_sens", aim_sens))
 		aim_accel = float(c.get_value("ctrl", "aim_accel", aim_accel))
 		recenter = float(c.get_value("ctrl", "recenter", recenter))
+		aim_assist = float(c.get_value("ctrl", "aim_assist", aim_assist))
 		thumb_n = c.get_value("ctrl", "thumb_n", thumb_n)
 		fire_n = c.get_value("ctrl", "fire_n", fire_n)
 
@@ -1496,6 +1543,7 @@ func _save() -> void:
 	c.set_value("ctrl", "aim_sens", aim_sens)
 	c.set_value("ctrl", "aim_accel", aim_accel)
 	c.set_value("ctrl", "recenter", recenter)
+	c.set_value("ctrl", "aim_assist", aim_assist)
 	c.set_value("ctrl", "thumb_n", thumb_n)
 	c.set_value("ctrl", "fire_n", fire_n)
 	c.save(SAVE_PATH)
@@ -1589,8 +1637,19 @@ func _autotest(dt: float) -> void:
 		# auf den Gegner an der Tür schießen
 		for e in enemies:
 			if e.slot.name == "door":
-				aim = cam.unproject_position(e.mi.global_transform * Vector3(0, e.h * 0.55, 0))
+				# Ziehen mit Zielhilfe prüfen, dann knapp daneben schießen
+				var dv = InputEventScreenDrag.new()
+				dv.index = 99
+				dv.relative = Vector2(6, 0)
+				dv.velocity = Vector2(400, 0)
+				_input(dv)
+				var tg = _assist_nearest(Vector2.ZERO, 1e9)
+				aim = cam.unproject_position(e.mi.global_transform * Vector3(0, e.h * (1.0 - e.gun_v), 0)) + Vector2(28, 0)
+				var before = kills
 				_shoot(aim)
+				print("ASSIST test kills ", before, " -> ", kills)
+				var t2 = _assist_nearest(aim, 1e9)
+				print("ASSIST r=", t2.get("r"), " d=", t2.get("d"))
 		at_step = 6
 	elif at_step == 6 and at_t > 6.68:
 		_snap("05_shot_hit")
