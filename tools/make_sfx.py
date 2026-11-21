@@ -98,3 +98,30 @@ fade = int(SR * 0.5); x[-fade:] = x[-fade:] * np.linspace(1, 0, fade) + x[:fade]
 x = x[:-fade]
 save('ambience', x, 0.35)
 print('ok')
+
+# --- Platzhalter für Boxen und Granaten ---
+# Kiste geöffnet: kurzes, helles Glöckchen-Arpeggio
+s = 0.7; x = np.zeros(int(SR * s))
+for k, f in enumerate([880, 1175, 1568]):
+    n = int(0.35 * SR); tt = np.arange(n) / SR
+    tone = (np.sin(2 * np.pi * f * tt) + 0.3 * np.sin(2 * np.pi * f * 2 * tt)) * np.exp(-tt * 9)
+    p = int(k * 0.07 * SR); x[p:p + n] += tone
+save('pickup', x, 0.6)
+# Mega-Kiste erscheint: funkelnder Glitzerlauf
+s = 1.1; x = np.zeros(int(SR * s))
+for k in range(9):
+    f = 1400 + k * 180 + rng.uniform(-40, 40)
+    n = int(0.3 * SR); tt = np.arange(n) / SR
+    tone = np.sin(2 * np.pi * f * tt) * np.exp(-tt * 14)
+    p = int(k * 0.085 * SR); x[p:p + n] += tone
+save('mega_appear', x, 0.55)
+# Warnpiepen bei anfliegender Granate
+s = 0.5; x = np.zeros(int(SR * s))
+for at in (0.0, 0.22):
+    n = int(0.12 * SR); tt = np.arange(n) / SR
+    tone = np.sign(np.sin(2 * np.pi * 1900 * tt)) * 0.5 * np.minimum(1, tt / 0.003) * np.minimum(1, (0.12 - tt) / 0.01)
+    p = int(at * SR); x[p:p + n] += tone
+save('warn', x, 0.5)
+# Wurf: kurzes Luftgeräusch
+s = 0.45; tt = t(s)
+save('throw', lp(noise(s), 0.12) * np.sin(np.pi * tt / s) ** 2, 0.6)

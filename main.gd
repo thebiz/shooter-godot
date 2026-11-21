@@ -102,6 +102,23 @@ var editing = false
 var ui_idx = -1             # Finger, der gerade einen Regler oder Knopf zieht
 var ui_drag = ""            # "slider0".., "thumb", "fire"
 var holes_live = []
+# Boxen, Waffen, Granaten, Auto
+var car_card = {}
+var car_dead = false
+var car_fx = []             # Feuer und Rauch am kaputten Auto
+var weapon = "pistol"       # pistol, shotgun, smg, rocket
+var wpn_ammo = 0
+var grenades = 1
+var fire_idx = -1           # Finger auf dem Feuerknopf (Dauerfeuer beim Maschinengewehr)
+var auto_t = 0.0
+var cover_time = 0.0        # wie lange man schon in Deckung hockt
+var nade_limit = 4.5        # danach wirft ein Gegner eine Granate über die Mauer
+var projs = []              # fliegende Granaten und Raketen
+var fbs = []                # Explosions-Bildfolgen
+var fb_sh: Shader
+var fb_mats = {}
+var tex_nade: Texture2D
+const WPN_NAMES = {"shotgun": "SHOTGUN", "smg": "MACHINE GUN", "rocket": "ROCKETS"}
 var shots_fired = 0
 var fx_k = 1.0
 var hits = 0
@@ -130,6 +147,7 @@ func _ready() -> void:
 	_load_save()
 	_make_shaders()
 	_make_fx_assets()
+	tex_nade = load("res://art/grenade.png")
 	_make_world()
 	_make_sounds()
 	_make_hud()
@@ -365,6 +383,8 @@ func _make_world() -> void:
 	var car = _card("car.png", 2.1, Vector3(4.0, -0.04, -8.4), "metal")
 	car.delay = 0.6
 	cards.append(car)
+	car_card = car
+	car.base = car.pv.position
 	var hedge = _card("hedge.png", 2.9, Vector3(6.6, -0.04, -7.7), "leaf")
 	hedge.delay = 0.7
 	cards.append(hedge)
@@ -443,7 +463,7 @@ func _make_sounds() -> void:
 
 # Spruch eines Gegners, kommt räumlich von seiner Position
 func _bark(e: Dictionary, cat: String, chance: float = 1.0, delay: float = 0.0, force: bool = false) -> void:
-	if randf() > chance or not voices.has(cat):
+	if e.get("box", false) or randf() > chance or not voices.has(cat):
 		return
 	if not force and bark_cd > 0.0:
 		return
@@ -551,6 +571,10 @@ func _thumb_home() -> Vector2:
 
 func _fire_center() -> Vector2:
 	return _vs() * fire_n
+
+
+func _nade_center() -> Vector2:
+	return _fire_center() + Vector2(-14, -168)
 
 
 func _frozen() -> bool:
@@ -692,14 +716,18 @@ func _hud_draw(c: Control) -> void:
 		_text(c, Vector2(0, 50), "STAGE %d  ·  %d / %d" % [stage, kills % KILLS_PER_STAGE, KILLS_PER_STAGE], 17, Color(1, 1, 1, 0.75), HORIZONTAL_ALIGNMENT_CENTER, vs.x, font_light)
 		# Munition unten rechts
 		_panel(c, Rect2(vs.x - 250, vs.y - 86, 230, 66))
-		for i in MAG:
-			var bx = vs.x - 232 + i * 17
-			var full = i < ammo
-			var bc = Color(1.0, 0.82, 0.45) if full else Color(1, 1, 1, 0.16)
-			c.draw_rect(Rect2(bx, vs.y - 70, 9, 24), bc)
-			c.draw_circle(Vector2(bx + 4.5, vs.y - 70), 4.5, bc)
-		_text(c, Vector2(vs.x - 92, vs.y - 43), "%d" % ammo, 34, Color.WHITE, HORIZONTAL_ALIGNMENT_RIGHT, 56)
-		_text(c, Vector2(vs.x - 34, vs.y - 43), "/%d" % MAG, 17, Color(1, 1, 1, 0.55), HORIZONTAL_ALIGNMENT_LEFT, -1, font_light)
+		if weapon != "pistol":
+			_text(c, Vector2(vs.x - 232, vs.y - 45), WPN_NAMES.get(weapon, ""), 19, Color(1.0, 0.82, 0.45), HORIZONTAL_ALIGNMENT_LEFT, -1)
+			_text(c, Vector2(vs.x - 92, vs.y - 43), "%d" % wpn_ammo, 34, Color.WHITE, HORIZONTAL_ALIGNMENT_RIGHT, 70)
+		else:
+			for i in MAG:
+				var bx = vs.x - 232 + i * 17
+				var full = i < ammo
+				var bc = Color(1.0, 0.82, 0.45) if full else Color(1, 1, 1, 0.16)
+				c.draw_rect(Rect2(bx, vs.y - 70, 9, 24), bc)
+				c.draw_circle(Vector2(bx + 4.5, vs.y - 70), 4.5, bc)
+			_text(c, Vector2(vs.x - 92, vs.y - 43), "%d" % ammo, 34, Color.WHITE, HORIZONTAL_ALIGNMENT_RIGHT, 56)
+			_text(c, Vector2(vs.x - 34, vs.y - 43), "/%d" % MAG, 17, Color(1, 1, 1, 0.55), HORIZONTAL_ALIGNMENT_LEFT, -1, font_light)
 	if state == "play":
 		# linkes Daumenfeld: halten = aufstehen und zielen
 		var tc = thumb if (aim_idx >= 0 and not editing) else _thumb_home()
@@ -717,6 +745,21 @@ func _hud_draw(c: Control) -> void:
 		for d in [Vector2(1, 0), Vector2(-1, 0), Vector2(0, 1), Vector2(0, -1)]:
 			c.draw_line(fc + d * 12, fc + d * 30, Color(1, 1, 1, 0.9 if can else 0.35), 3.0, true)
 		c.draw_arc(fc, 21, 0, TAU, 32, Color(1, 1, 1, 0.9 if can else 0.35), 3.0, true)
+		# Granaten-Knopf mit Anzahl
+		var gc = _nade_center()
+		var has = grenades > 0
+		c.draw_circle(gc, 44, Color(0.06, 0.05, 0.05, 0.55 if has else 0.3))
+		c.draw_arc(gc, 44, 0, TAU, 40, Color(0.7, 0.85, 0.45, 0.85 if has else 0.3), 2.5, true)
+		c.draw_texture_rect(tex_nade, Rect2(gc - Vector2(17, 24), Vector2(34, 46)), false, Color(1, 1, 1, 1.0 if has else 0.35))
+		c.draw_circle(gc + Vector2(30, -30), 14, Color(0.12, 0.1, 0.08, 0.9))
+		_text(c, gc + Vector2(16, -23), "%d" % grenades, 16, Color.WHITE, HORIZONTAL_ALIGNMENT_CENTER, 28)
+		# anfliegende Gegner-Granate: roter Ring zum Abschießen
+		for pr in projs:
+			if pr.kind == "enade" and is_instance_valid(pr.n) and not cam.is_position_behind(pr.n.global_position):
+				var gsp = cam.unproject_position(pr.n.global_position)
+				var bl = 0.5 + 0.5 * sin(st_t * 18.0)
+				c.draw_arc(gsp, 34, 0, TAU, 36, Color(1.0, 0.2, 0.1, 0.6 + 0.4 * bl), 3.5, true)
+				c.draw_arc(gsp, 50, 0, TAU, 36, Color(1.0, 0.2, 0.1, 0.35 * bl), 2.0, true)
 		if ammo == 0 and not cover and reload_t <= 0:
 			var bl = 0.55 + 0.45 * sin(st_t * 10.0)
 			_text(c, Vector2(0, vs.y * 0.66), "RELOAD  –  LET GO TO TAKE COVER", 30, Color(1, 0.85, 0.4, bl), HORIZONTAL_ALIGNMENT_CENTER, vs.x)
@@ -876,6 +919,17 @@ func _start_game() -> void:
 	kills = 0
 	stage = 1
 	ammo = MAG
+	weapon = "pistol"
+	wpn_ammo = 0
+	grenades = 1
+	fire_idx = -1
+	cover_time = 0.0
+	nade_limit = 4.5
+	for pr in projs:
+		if is_instance_valid(pr.n):
+			pr.n.queue_free()
+	projs.clear()
+	_car_reset()
 	reload_t = 0.0
 	cover = true
 	aim_idx = -1
@@ -890,6 +944,10 @@ func _start_game() -> void:
 
 func _game_over() -> void:
 	_set_state("over")
+	for pr in projs:
+		if is_instance_valid(pr.n):
+			pr.n.queue_free()
+	projs.clear()
 	cover = false
 	var newbest = score > best
 	if newbest:
@@ -938,7 +996,7 @@ func _process(dt: float) -> void:
 
 	# Pop-up-Buch: Kulissen klappen auf oder zu
 	for c in cards:
-		if c.get("static", false) or c.kind == "sky" or c.kind == "room":
+		if c.get("static", false) or c.kind == "sky" or c.kind == "room" or c.get("dead", false):
 			continue
 		var prev = c.t
 		c.t += dt
@@ -963,6 +1021,8 @@ func _process(dt: float) -> void:
 			pass
 
 	_enemies_update(dt)
+	_proj_update(dt)
+	_fb_update(dt)
 	_camera_update(dt)
 	if autotest:
 		_autotest(dt)
@@ -981,10 +1041,36 @@ func _play_update(dt: float) -> void:
 			reload_t = 0.0
 	elif not cover:
 		reload_t = 0.0
+	# Maschinengewehr: Feuerknopf halten = Dauerfeuer
+	if weapon == "smg" and fire_idx >= 0 and not cover:
+		auto_t -= dt
+		if auto_t <= 0.0:
+			_shoot(aim)
+			auto_t = 0.09
+	# zu lange in Deckung: ein Gegner wirft eine Granate über die Mauer
+	if not _frozen():
+		if cover:
+			cover_time += dt
+		else:
+			cover_time = maxf(0.0, cover_time - dt * 2.0)
+		if cover_time > nade_limit:
+			var thrower = {}
+			for e in enemies:
+				if not e.get("box", false) and (e.state == "aim" or e.state == "linger"):
+					thrower = e
+					break
+			var flying = false
+			for pr in projs:
+				if pr.kind == "enade":
+					flying = true
+			if not thrower.is_empty() and not flying:
+				_enemy_grenade(thrower)
+				cover_time = 0.0
+				nade_limit = maxf(2.6, randf_range(3.6, 5.0) - stage * 0.2)
 	# Gegner nachschicken
 	var alive = 0
 	for e in enemies:
-		if e.state != "fall":
+		if e.state != "fall" and not e.get("box", false):
 			alive += 1
 	var max_alive = 1
 	if kills >= 4:
@@ -1009,12 +1095,19 @@ func _diff_aim() -> float:
 func _spawn() -> void:
 	var free = []
 	for s in slots:
-		if not s.busy:
+		if not s.busy and not s.get("off", false):
 			free.append(s)
 	if free.is_empty():
 		return
 	var s = free[randi() % free.size()]
 	s.busy = true
+	var boxes = 0
+	for e in enemies:
+		if e.get("box", false):
+			boxes += 1
+	if boxes == 0 and kills >= 2 and randf() < 0.16:
+		_spawn_box(s, kills >= 5 and randf() < 0.15)
+		return
 	var ti = randi() % ENEMY_TEX.size()
 	var tex: Texture2D = load("res://art/" + ENEMY_TEX[ti] + ".png")
 	var w = ENEMY_H * tex.get_width() / float(tex.get_height())
@@ -1024,6 +1117,126 @@ func _spawn() -> void:
 	enemies.append(c)
 	_sfx("target_up", -6.0, 0.12)
 	_bark(c, "appear", 0.55, 0.25)
+
+
+func _spawn_box(s: Dictionary, mega: bool) -> void:
+	var pos: Vector3 = s.pos
+	if s.name.begins_with("window"):
+		pos.y += 0.74
+		pos.z += 0.1
+	elif s.name == "car":
+		pos.y += 1.02
+	var c = _card("box_mega.png" if mega else "box.png", 0.85 if mega else 0.8, pos, "box")
+	c.merge({"slot": s, "state": "appear", "t": 0.0, "aim": 99.0, "shots": 0, "gun_v": 0.5, "mode": "flip", "seen": 0.0, "side": 1.0,
+		"box": true, "mega": mega, "life": 2.4 if mega else 3.2}, true)
+	_enemy_pose(c, 0.0)
+	enemies.append(c)
+	_sfx("target_up", -4.0, 0.12)
+	if mega:
+		_sfx("mega_appear", -2.0, 0.0)
+		var l = OmniLight3D.new()
+		l.light_color = Color(1.0, 0.78, 0.3)
+		l.omni_range = 2.6
+		l.light_energy = 2.5
+		l.position = Vector3(0, c.h * 0.5, 0.35)
+		c.mi.add_child(l)
+		c.glow = l
+		var sp = CPUParticles3D.new()
+		var q = QuadMesh.new()
+		q.size = Vector2(0.05, 0.05)
+		q.material = fx_mat_spark
+		sp.mesh = q
+		sp.amount = 18
+		sp.lifetime = 0.9
+		sp.emission_shape = CPUParticles3D.EMISSION_SHAPE_BOX
+		sp.emission_box_extents = Vector3(c.w * 0.55, c.h * 0.5, 0.05)
+		sp.position = Vector3(0, c.h * 0.5, 0.12)
+		sp.gravity = Vector3(0, 0.6, 0)
+		sp.initial_velocity_min = 0.1
+		sp.initial_velocity_max = 0.4
+		var g = Gradient.new()
+		g.set_color(0, Color(3.0, 2.4, 0.9, 0.0))
+		g.add_point(0.25, Color(3.0, 2.4, 0.9, 1.0))
+		g.set_color(g.get_point_count() - 1, Color(2.0, 1.4, 0.4, 0.0))
+		sp.color_ramp = g
+		sp.scale_amount_min = 0.4
+		sp.scale_amount_max = 1.2
+		c.mi.add_child(sp)
+
+
+func _open_box(c: Dictionary) -> void:
+	c.state = "fall"
+	c.t = 0.0
+	var title = ""
+	var sub = ""
+	var pts = 50
+	var r = ""
+	if c.mega:
+		r = ["rocket", "bonanza"][randi() % 2]
+		pts = 250
+	else:
+		var x = randf()
+		r = "grenade" if x < 0.3 else ("health" if x < 0.55 else ("shotgun" if x < 0.8 else "smg"))
+	match r:
+		"grenade":
+			grenades += 1
+			title = "+1 GRENADE"
+		"health":
+			health = minf(100.0, health + 30.0)
+			title = "+30 HEALTH"
+		"shotgun":
+			weapon = "shotgun"
+			wpn_ammo = 8
+			title = "SHOTGUN"
+			sub = "8 shells"
+		"smg":
+			weapon = "smg"
+			wpn_ammo = 40
+			title = "MACHINE GUN"
+			sub = "hold FIRE"
+		"rocket":
+			weapon = "rocket"
+			wpn_ammo = 3
+			title = "ROCKET LAUNCHER"
+			sub = "3 rockets"
+		"bonanza":
+			health = 100.0
+			grenades += 3
+			title = "FULL HEALTH"
+			sub = "+3 GRENADES"
+	score += pts
+	_show_msg(title, sub, 1.6)
+	_sfx("pickup", 0.0, 0.0)
+	var cp: Vector3 = c.mi.global_transform * Vector3(0, c.h * 0.5, 0.1)
+	fx_k = clampf(cp.distance_to(cam.global_position) / 7.0, 0.22, 1.3)
+	_sparks(cp, Vector3(0, 0.5, 1).normalized(), 26 if c.mega else 14)
+	_float_text(cp + Vector3(0, 0.3, 0.1), "+%d" % pts, c.mega)
+
+
+# Gegner (oder Box) erledigt – auch von Explosionen
+func _kill_enemy(c: Dictionary, point: Vector3, head: bool) -> void:
+	if c.get("box", false):
+		_open_box(c)
+		return
+	hits += 1
+	var pts = 100 + int(clampf(1.0 - c.seen / maxf(c.aim, 0.1), 0, 1) * 100.0)
+	if head:
+		pts += 50
+	score += pts
+	kills += 1
+	hit_mark = 1.0
+	c.state = "fall"
+	c.t = 0.0
+	_bark(c, "hit", 1.0, 0.0, true)
+	for o in enemies:
+		if o != c and o.state != "fall" and o.state != "hide" and not o.get("box", false):
+			_bark(o, "mandown", 0.5, 0.75, true)
+			break
+	_float_text(point + Vector3(0, 0.25, 0.1), ("HEADSHOT  +%d" if head else "+%d") % pts, head)
+	if kills % KILLS_PER_STAGE == 0:
+		stage += 1
+		health = minf(100.0, health + 25.0)
+		_show_msg("STAGE %d" % stage, "+25 HEALTH", 2.2)
 
 
 func _enemy_pose(e: Dictionary, k: float) -> void:
@@ -1053,6 +1266,16 @@ func _enemies_update(dt: float) -> void:
 				_enemy_pose(e, 1.0)
 				if _frozen():
 					e.t -= dt
+					continue
+				if e.get("box", false):
+					if e.mega:
+						var pu = 0.5 + 0.5 * sin(e.t * 9.0)
+						e.mat.set_shader_parameter("flash", 0.12 + 0.22 * pu)
+						if e.has("glow") and is_instance_valid(e.glow):
+							e.glow.light_energy = 1.5 + 2.5 * pu
+					if e.t > e.life and state == "play":
+						e.state = "hide"
+						e.t = 0.0
 					continue
 				e.seen += dt
 				if state != "play":
@@ -1195,6 +1418,8 @@ func _input(ev: InputEvent) -> void:
 			ui_idx = -1
 			ui_drag = ""
 			_save()
+		elif ev.index == fire_idx:
+			fire_idx = -1
 		elif ev.index == aim_idx:
 			# Daumen weg: zurück in Deckung (lädt automatisch nach), Fadenkreuz gleitet zur Mitte
 			aim_idx = -1
@@ -1254,7 +1479,11 @@ func _press(p: Vector2, idx: int = 0) -> void:
 		"play":
 			if _ui_press(p, idx):
 				return
-			if p.distance_to(_fire_center()) < 105:
+			if p.distance_to(_nade_center()) < 58:
+				_throw_grenade()
+			elif p.distance_to(_fire_center()) < 105:
+				fire_idx = idx
+				auto_t = 0.09
 				if not cover:
 					_shoot(aim)
 			elif aim_idx < 0:
@@ -1266,14 +1495,60 @@ func _press(p: Vector2, idx: int = 0) -> void:
 
 
 func _shoot(p: Vector2) -> void:
-	if ammo <= 0:
-		_sfx("empty", -2.0, 0.02)
-		return
-	ammo -= 1
+	var w = weapon
+	if w == "pistol":
+		if ammo <= 0:
+			_sfx("empty", -2.0, 0.02)
+			return
+		ammo -= 1
+	else:
+		wpn_ammo -= 1
+		if wpn_ammo <= 0:
+			weapon = "pistol"
+			wpn_ammo = 0
 	shots_fired += 1
-	kick = 1.0
-	shake = maxf(shake, 0.25)
-	_sfx("shot_player", -1.0, 0.06)
+	kick = 1.0 if w != "smg" else 0.45
+	shake = maxf(shake, 0.25 if w == "pistol" else (0.18 if w == "smg" else 0.55))
+	match w:
+		"shotgun":
+			_sfx("shot_player", 3.0, 0.05)
+			_sfx("shot_enemy", 0.0, 0.05)
+		"smg":
+			_sfx("shot_player", -5.0, 0.12)
+		"rocket":
+			_sfx("throw", 2.0, 0.05)
+			_sfx("shot_enemy", -2.0, 0.05)
+		_:
+			_sfx("shot_player", -1.0, 0.06)
+	# anfliegende Gegner-Granate abschießen?
+	for pr in projs:
+		if pr.kind == "enade" and is_instance_valid(pr.n):
+			var gp: Vector3 = pr.n.global_position
+			if not cam.is_position_behind(gp) and cam.unproject_position(gp).distance_to(p) < 60.0:
+				_proj_remove(pr)
+				_explode(gp, 1.6, false)
+				score += 200
+				_float_text(gp + Vector3(0, 0.3, 0), "NICE SHOT  +200", true)
+				return
+	if w == "rocket":
+		var tp = _aim_point(p)
+		var from: Vector3 = cam.global_transform * Vector3(0.35, -0.3, -0.6)
+		_launch(from, tp, maxf(0.12, from.distance_to(tp) / 38.0), 0.0, "rocket")
+		return
+	if w == "shotgun":
+		# Schrotflinte: alle Gegner nahe am Fadenkreuz, plus Streuschüsse in die Umgebung
+		for e in enemies.duplicate():
+			if e.state == "fall" or e.state == "hide":
+				continue
+			var tg = _assist_nearest(p, 3.4)
+			if tg.is_empty():
+				break
+			_kill_enemy(tg.e, tg.e.mi.global_transform * tg.lp, false)
+		for i in 5:
+			var sp = p + Vector2(randf_range(-55, 55), randf_range(-40, 40))
+			var sh = _pick(sp, (cards).filter(func(x): return x != wall))
+			if not sh.is_empty():
+				_impact(sh, true)
 	# Mündungslicht der eigenen Waffe (rechts unten) erhellt kurz die Mauer
 	_flash_light(cam.global_transform * Vector3(0.35, -0.3, -0.6), 3.5, Color(1.0, 0.72, 0.4), 3.0)
 	var targets = (cards + enemies).filter(func(x): return x != wall)
@@ -1288,30 +1563,338 @@ func _shoot(p: Vector2) -> void:
 	if hit.is_empty():
 		return
 	var c = hit.card
-	if c.kind == "card" and enemies.has(c) and c.state != "fall":
-		hits += 1
-		var head = hit.uv.y < 0.17
-		var pts = 100 + int(clampf(1.0 - c.seen / maxf(c.aim, 0.1), 0, 1) * 100.0)
-		if head:
-			pts += 50
-		score += pts
-		kills += 1
-		hit_mark = 1.0
-		c.state = "fall"
-		c.t = 0.0
+	if enemies.has(c) and c.state != "fall" and c.state != "hide" and (c.kind == "card" or c.kind == "box"):
 		_impact(hit, false)
-		_bark(c, "hit", 1.0, 0.0, true)
-		for o in enemies:
-			if o != c and o.state != "fall" and o.state != "hide":
-				_bark(o, "mandown", 0.5, 0.75, true)
-				break
-		_float_text(hit.point + Vector3(0, 0.25, 0.1), ("HEADSHOT  +%d" if head else "+%d") % pts, head)
-		if kills % KILLS_PER_STAGE == 0:
-			stage += 1
-			health = minf(100.0, health + 25.0)
-			_show_msg("STAGE %d" % stage, "+25 HEALTH", 2.2)
+		_kill_enemy(c, hit.point, hit.uv.y < 0.17 and not c.get("box", false))
 	else:
 		_impact(hit, true)
+		# Schuss aufs Auto mit der Schrotflinte o. Ä. lässt es nicht explodieren – dafür braucht es Granate oder Rakete
+
+
+# Weltpunkt unter dem Fadenkreuz (Kulisse, sonst Boden)
+func _aim_point(p: Vector2) -> Vector3:
+	var hit = _pick(p, (cards + enemies).filter(func(x): return x != wall and x.kind != "room"))
+	if not hit.is_empty():
+		return hit.point
+	var o = cam.project_ray_origin(p)
+	var d = cam.project_ray_normal(p)
+	if d.y < -0.01:
+		return o + d * (-o.y / d.y)
+	return o + d * 14.0
+
+
+func _throw_grenade() -> void:
+	if grenades <= 0 or state != "play":
+		_sfx("empty", -4.0, 0.0)
+		return
+	grenades -= 1
+	var tp = _aim_point(aim)
+	var from: Vector3 = cam.global_transform * Vector3(0.3, -0.35, -0.4)
+	var dist = from.distance_to(tp)
+	_launch(from, tp, 0.55 + dist * 0.03, 1.5 + dist * 0.12, "nade")
+	_sfx("throw", 0.0, 0.08)
+
+
+func _enemy_grenade(e: Dictionary) -> void:
+	var from: Vector3 = e.mi.global_transform * Vector3(0, e.h * 0.8, 0.1)
+	var tp = Vector3(cam.global_position.x + randf_range(-0.3, 0.3), 0.35, -0.55)
+	_launch(from, tp, 1.9, 4.2, "enade")
+	_bark(e, "fire", 1.0, 0.0, true)
+	_sfx("throw", -2.0, 0.08)
+	_sfx("warn", 0.0, 0.0)
+	_show_msg("GRENADE!", "pop up and shoot it", 1.4)
+
+
+func _launch(from: Vector3, to: Vector3, dur: float, apex: float, kind: String) -> void:
+	var sp = Sprite3D.new()
+	if kind == "rocket":
+		sp.texture = tex_flash
+		sp.pixel_size = 0.5 / 128.0
+		sp.modulate = Color(2.5, 1.6, 0.8)
+	else:
+		sp.texture = tex_nade
+		sp.pixel_size = 0.16 / 256.0
+	sp.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	sp.shaded = false
+	sp.render_priority = 5
+	add_child(sp)
+	sp.global_position = from
+	projs.append({"n": sp, "from": from, "to": to, "t": 0.0, "dur": dur, "apex": apex, "kind": kind, "trail": 0.0})
+
+
+func _proj_remove(pr: Dictionary) -> void:
+	if is_instance_valid(pr.n):
+		pr.n.queue_free()
+	projs.erase(pr)
+
+
+func _proj_update(dt: float) -> void:
+	for pr in projs.duplicate():
+		if not is_instance_valid(pr.n):
+			projs.erase(pr)
+			continue
+		if _frozen():
+			continue
+		pr.t += dt
+		var u = clampf(pr.t / pr.dur, 0, 1)
+		var pos: Vector3 = pr.from.lerp(pr.to, u) + Vector3(0, 4.0 * pr.apex * u * (1.0 - u), 0)
+		pr.n.global_position = pos
+		pr.n.rotation.z += dt * (14.0 if pr.kind != "rocket" else 0.0)
+		pr.trail -= dt
+		if pr.kind == "rocket" and pr.trail <= 0.0:
+			pr.trail = 0.03
+			_smoke(pos, 1)
+		if u >= 1.0:
+			var kind = pr.kind
+			_proj_remove(pr)
+			if kind == "enade":
+				_explode(pos, 1.5, true)
+			else:
+				_explode(pos, 3.0 if kind == "nade" else 2.6, false)
+
+
+# Explosion: Feuerball, Rauch, Funken, Licht; erledigt alles im Umkreis
+func _explode(pos: Vector3, radius: float, hurts_player: bool) -> void:
+	var dcam = pos.distance_to(cam.global_position)
+	var k = clampf(radius / 3.0, 0.5, 1.4) * (0.45 if dcam < 3.0 else 1.0)
+	_fb_boom(pos, k)
+	fx_k = clampf(dcam / 7.0, 0.22, 1.3)
+	_sparks(pos, Vector3.UP, 30)
+	_chunks(pos, Vector3.UP, 18, [Color(0.35, 0.3, 0.26), Color(0.6, 0.45, 0.3), Color(0.2, 0.18, 0.16)], 0.06, 1.0)
+	var l = OmniLight3D.new()
+	l.position = pos + Vector3(0, 0.8, 0.5)
+	l.omni_range = 9.0
+	l.light_color = Color(1.0, 0.6, 0.25)
+	l.light_energy = 9.0
+	add_child(l)
+	var tw = create_tween()
+	tw.tween_property(l, "light_energy", 0.0, 0.55)
+	tw.tween_callback(l.queue_free)
+	_sfx("boom", 2.0 if dcam > 4.0 else 4.0, 0.1)
+	shake = maxf(shake, clampf(1.5 - dcam / 14.0, 0.35, 1.3))
+	if hurts_player:
+		health -= 35.0
+		hurt = 1.0
+		_sfx("player_hit", 0.0, 0.04)
+		if not autotest:
+			Input.vibrate_handheld(200)
+		return
+	for e in enemies.duplicate():
+		if e.state == "fall" or e.state == "hide" or not is_instance_valid(e.mi):
+			continue
+		var ep: Vector3 = e.mi.global_transform * Vector3(0, e.h * 0.5, 0)
+		var d = Vector2(ep.x - pos.x, ep.z - pos.z).length()
+		if d < radius and absf(ep.y - pos.y) < radius + 1.0:
+			_kill_enemy(e, ep, false)
+	if not car_dead and not car_card.is_empty():
+		var cp: Vector3 = car_card.pv.global_position + Vector3(0, 0.7, 0)
+		if cp.distance_to(pos) < radius + 0.9:
+			get_tree().create_timer(0.15).timeout.connect(_car_explode)
+
+
+func _car_explode() -> void:
+	if car_dead:
+		return
+	car_dead = true
+	car_card.dead = true
+	for s in slots:
+		if s.name == "car":
+			s.off = true
+	var cp: Vector3 = car_card.pv.global_position + Vector3(0, 0.6, 0.3)
+	_explode(cp, 3.2, false)
+	_fb_boom(cp + Vector3(0, 0.6, 0), 1.6)
+	score += 300
+	_float_text(cp + Vector3(0, 1.4, 0), "CAR  +300", true)
+	# Pappauto fliegt hoch, dreht sich und klatscht verkohlt hinten auf
+	car_card.mat.set_shader_parameter("dim", 0.32)
+	var pv: Node3D = car_card.pv
+	var base: Vector3 = car_card.base
+	var tw = create_tween()
+	tw.tween_property(pv, "position", base + Vector3(0.3, 2.4, -0.6), 0.45).set_ease(Tween.EASE_OUT).set_trans(Tween.TRANS_QUAD)
+	tw.parallel().tween_property(pv, "rotation", Vector3(-1.1, 0.25, 0.5), 0.45)
+	tw.tween_property(pv, "position", base + Vector3(0.5, 0.0, -0.9), 0.4).set_ease(Tween.EASE_IN).set_trans(Tween.TRANS_QUAD)
+	tw.parallel().tween_property(pv, "rotation", Vector3(-PI * 0.5, 0.3, 0.12), 0.4)
+	tw.tween_callback(func(): _sfx("target_down", 2.0, 0.0))
+	# Feuer und Rauch bleiben
+	var fire = CPUParticles3D.new()
+	var q = QuadMesh.new()
+	q.size = Vector2(0.35, 0.35)
+	q.material = fx_mat_spark
+	fire.mesh = q
+	fire.amount = 40
+	fire.lifetime = 0.8
+	fire.emission_shape = CPUParticles3D.EMISSION_SHAPE_BOX
+	fire.emission_box_extents = Vector3(0.9, 0.1, 0.4)
+	fire.direction = Vector3.UP
+	fire.spread = 15.0
+	fire.gravity = Vector3(0, 1.5, 0)
+	fire.initial_velocity_min = 0.5
+	fire.initial_velocity_max = 1.4
+	var fg = Gradient.new()
+	fg.set_color(0, Color(2.6, 1.5, 0.4, 0.0))
+	fg.add_point(0.15, Color(2.6, 1.3, 0.35, 0.9))
+	fg.set_color(fg.get_point_count() - 1, Color(0.8, 0.15, 0.02, 0.0))
+	fire.color_ramp = fg
+	var fsc = Curve.new()
+	fsc.add_point(Vector2(0, 1.0))
+	fsc.add_point(Vector2(1, 0.3))
+	fire.scale_amount_curve = fsc
+	add_child(fire)
+	fire.global_position = base + Vector3(0.5, 0.15, -0.6)
+	car_fx.append(fire)
+	var smoke = CPUParticles3D.new()
+	var q2 = QuadMesh.new()
+	q2.size = Vector2(0.9, 0.9)
+	q2.material = fx_mat_dust
+	smoke.mesh = q2
+	smoke.amount = 26
+	smoke.lifetime = 4.5
+	smoke.emission_shape = CPUParticles3D.EMISSION_SHAPE_BOX
+	smoke.emission_box_extents = Vector3(0.7, 0.1, 0.3)
+	smoke.direction = Vector3(0.25, 1, 0)
+	smoke.spread = 12.0
+	smoke.gravity = Vector3(0.15, 0.35, 0)
+	smoke.initial_velocity_min = 0.4
+	smoke.initial_velocity_max = 0.9
+	var ssc = Curve.new()
+	ssc.add_point(Vector2(0, 0.5))
+	ssc.add_point(Vector2(1, 2.6))
+	smoke.scale_amount_curve = ssc
+	var sg = Gradient.new()
+	sg.set_color(0, Color(0.12, 0.1, 0.09, 0.0))
+	sg.add_point(0.15, Color(0.14, 0.12, 0.1, 0.6))
+	sg.set_color(sg.get_point_count() - 1, Color(0.35, 0.3, 0.28, 0.0))
+	smoke.color_ramp = sg
+	add_child(smoke)
+	smoke.global_position = base + Vector3(0.5, 0.6, -0.7)
+	car_fx.append(smoke)
+	var fl = OmniLight3D.new()
+	fl.light_color = Color(1.0, 0.55, 0.2)
+	fl.omni_range = 4.0
+	fl.light_energy = 1.6
+	add_child(fl)
+	fl.global_position = base + Vector3(0.5, 0.8, 0.2)
+	car_fx.append(fl)
+
+
+func _car_reset() -> void:
+	for n in car_fx:
+		if is_instance_valid(n):
+			n.queue_free()
+	car_fx.clear()
+	for s in slots:
+		s.off = false
+	if car_card.is_empty():
+		return
+	car_dead = false
+	car_card.dead = false
+	car_card.pv.position = car_card.base
+	car_card.pv.rotation = Vector3.ZERO
+	car_card.mat.set_shader_parameter("dim", 1.0)
+
+
+# ---------------- Explosions-Bildfolgen (aus AntiGrav, Unity Labs CC0)
+const FB_SH = """
+shader_type spatial;
+render_mode unshaded,blend_mix,depth_draw_never,cull_disabled,shadows_disabled;
+uniform sampler2D tex : source_color, filter_linear_mipmap, repeat_disable;
+uniform float grid=5.;
+uniform vec3 smk=vec3(1.);
+instance uniform float fr=0.;
+instance uniform float al=1.;
+instance uniform float rot=0.;
+instance uniform float flip=1.;
+instance uniform float em=1.3;
+void vertex(){
+	mat4 mv=VIEW_MATRIX*mat4(INV_VIEW_MATRIX[0],INV_VIEW_MATRIX[1],INV_VIEW_MATRIX[2],MODEL_MATRIX[3]);
+	float sx=length(MODEL_MATRIX[0].xyz);
+	MODELVIEW_MATRIX=mv*mat4(vec4(sx,0.,0.,0.),vec4(0.,sx,0.,0.),vec4(0.,0.,sx,0.),vec4(0.,0.,0.,1.));
+}
+vec4 cel(float f,vec2 uv){
+	float n=grid*grid;
+	f=clamp(f,0.,n-1.);
+	vec2 c=vec2(mod(f,grid),floor(f/grid));
+	return texture(tex,(c+clamp(uv,vec2(.004),vec2(.996)))/grid);
+}
+void fragment(){
+	vec2 uv=UV-.5;
+	uv.x*=flip;
+	float cs=cos(rot),sn=sin(rot);
+	uv=vec2(cs*uv.x-sn*uv.y,sn*uv.x+cs*uv.y)+.5;
+	float m=step(0.,uv.x)*step(uv.x,1.)*step(0.,uv.y)*step(uv.y,1.);
+	float f0=floor(fr);
+	vec4 c=mix(cel(f0,uv),cel(f0+1.,uv),fr-f0);
+	float lum=max(c.r,max(c.g,c.b));
+	ALBEDO=c.rgb*smk*(1.+em*smoothstep(.55,1.,lum));
+	ALPHA=c.a*al*m;
+}
+"""
+
+
+func _fb_mat(key: String) -> ShaderMaterial:
+	if fb_mats.has(key):
+		return fb_mats[key]
+	if fb_sh == null:
+		fb_sh = Shader.new()
+		fb_sh.code = FB_SH
+	var m = ShaderMaterial.new()
+	m.shader = fb_sh
+	m.set_shader_parameter("tex", load("res://fx/%s.png" % key))
+	m.set_shader_parameter("grid", 8.0 if key == "wisp8" else 5.0)
+	m.set_shader_parameter("smk", Vector3(0.85, 0.78, 0.72) if key in ["wisp8", "smoke5"] else Vector3(1, 1, 1))
+	fb_mats[key] = m
+	return m
+
+
+func _fb_quad(key: String, pos: Vector3, size: float) -> MeshInstance3D:
+	var mi = MeshInstance3D.new()
+	var q = QuadMesh.new()
+	q.size = Vector2(1, 1)
+	mi.mesh = q
+	mi.material_override = _fb_mat(key)
+	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	add_child(mi)
+	mi.global_position = pos
+	mi.scale = Vector3.ONE * size
+	mi.set_instance_shader_parameter("rot", randf() * TAU)
+	mi.set_instance_shader_parameter("flip", -1.0 if randf() < 0.5 else 1.0)
+	mi.set_instance_shader_parameter("fr", 0.0)
+	mi.visible = false
+	return mi
+
+
+func _fb_boom(pos: Vector3, k: float) -> void:
+	var keys = ["boom0", "boom1", "boom2"]
+	keys.shuffle()
+	for i in 2:
+		var off = Vector3(randf_range(-0.4, 0.4), randf_range(0.0, 0.4), randf_range(-0.2, 0.2)) * k * (0.0 if i == 0 else 1.0)
+		var sz = k * (3.2 if i == 0 else randf_range(2.0, 2.7))
+		var mi = _fb_quad(keys[i], pos + off + Vector3(0, sz * 0.2, 0.2), sz)
+		mi.set_instance_shader_parameter("em", 1.3)
+		fbs.append({"n": mi, "t": -0.05 * i, "dur": randf_range(1.4, 1.9), "g": randf_range(0.25, 0.55) * k})
+	var sm = _fb_quad("smoke5", pos + Vector3(0, k * 0.5, 0.1), k * 3.8)
+	sm.set_instance_shader_parameter("em", 0.0)
+	fbs.append({"n": sm, "t": -0.12, "dur": 3.0, "g": 0.35 * k})
+
+
+func _fb_update(dt: float) -> void:
+	for i in range(fbs.size() - 1, -1, -1):
+		var e: Dictionary = fbs[i]
+		if not is_instance_valid(e.n):
+			fbs.remove_at(i)
+			continue
+		e.t += dt
+		var u = e.t / float(e.dur)
+		if u >= 1.0:
+			e.n.queue_free()
+			fbs.remove_at(i)
+			continue
+		var mi: MeshInstance3D = e.n
+		mi.visible = e.t >= 0.0
+		var uu = clampf(u, 0.0, 1.0)
+		mi.set_instance_shader_parameter("fr", uu * 23.999)
+		mi.set_instance_shader_parameter("al", clampf((1.0 - uu) * 3.0, 0.0, 1.0))
+		mi.global_position += Vector3(0, float(e.g) * dt, 0)
 
 
 # Snap-Modus: Daumenweg vom Aufsetzpunkt zeigt in eine Richtung, das Fadenkreuz nimmt die feste Zone,
@@ -1786,8 +2369,54 @@ func _autotest(dt: float) -> void:
 		_snap("08c_edit")
 		editing = false
 		cover = false
+		aim_idx = 99
+		health = 100
+		for e in enemies:
+			if not e.get("box", false) and e.state != "fall":
+				e.aim = 99.0
+		# Mega-Box im Fenster oben
+		for sl in slots:
+			if sl.name == "window2":
+				sl.busy = true
+				_spawn_box(sl, true)
+		at_step = 130
+	elif at_step == 130 and at_t > 10.5:
+		_snap("10_megabox")
+		var bx = enemies[-1]
+		aim = cam.unproject_position(bx.mi.global_transform * Vector3(0, bx.h * 0.5, 0))
+		_shoot(aim)
+		print("BOX weapon=", weapon, " grenades=", grenades, " health=", health)
+		at_step = 131
+	elif at_step == 131 and at_t > 10.65:
+		_snap("11_box_open")
+		grenades = max(grenades, 1)
+		aim = cam.unproject_position(car_card.pv.global_position + Vector3(0, 0.6, 0))
+		_throw_grenade()
+		at_step = 132
+	elif at_step == 132 and at_t > 11.45:
+		_snap("12_nade_flying")
+		at_step = 133
+	elif at_step == 133 and at_t > 11.85:
+		_snap("13_car_boom")
+		at_step = 134
+	elif at_step == 134 and at_t > 13.2:
+		_snap("14_car_burning")
+		print("CAR dead=", car_dead, " score=", score)
+		# Gegner-Granate
+		var e = _force_enemy("door")
+		e.aim = 99.0
+		at_step = 135
+	elif at_step == 135 and at_t > 14.0:
+		_enemy_grenade(enemies[-1])
+		at_step = 136
+	elif at_step == 136 and at_t > 14.9:
+		_snap("15_incoming")
+		at_step = 137
+	elif at_step == 137 and at_t > 16.2:
+		_snap("16_nade_hit")
+		print("after enemy nade health=", health)
 		health = 0
 		at_step = 13
-	elif at_step == 13 and at_t > 12.3:
+	elif at_step == 13 and at_t > 18.6:
 		_snap("09_game_over")
 		get_tree().quit()
