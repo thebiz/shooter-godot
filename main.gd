@@ -51,6 +51,8 @@ var sounds = {}
 var voices = {}
 var bark_cd = 0.0
 var ambience: AudioStreamPlayer
+var music: AudioStreamPlayer
+var music_vol = 0.5
 var motes: CPUParticles3D
 
 # Spielzustand
@@ -95,7 +97,8 @@ const SLIDERS = [
 	{"label": "AIM SPEED", "key": "aim_sens", "min": 0.6, "max": 3.5},
 	{"label": "ACCELERATION", "key": "aim_accel", "min": 0.0, "max": 3.0},
 	{"label": "RETURN TO CENTER", "key": "recenter", "min": 0.0, "max": 1.0},
-	{"label": "AIM ASSIST", "key": "aim_assist", "min": 0.0, "max": 1.0}]
+	{"label": "AIM ASSIST", "key": "aim_assist", "min": 0.0, "max": 1.0},
+	{"label": "MUSIC", "key": "music_vol", "min": 0.0, "max": 1.0}]
 var panel_open = false
 var panel_k = 0.0
 var editing = false
@@ -406,7 +409,6 @@ func _make_world() -> void:
 			slots.append({"pos": Vector3(x, ybot - 0.74, FAC_Z - 0.32), "mode": "flip", "busy": false, "name": "window%d" % i})
 	slots.append({"pos": Vector3(-2.55, 0.0, -7.4), "mode": "flip", "busy": false, "name": "crates"})
 	slots.append({"pos": Vector3(4.25, 0.28, -8.75), "mode": "flip", "busy": false, "name": "car"})
-	slots.append({"pos": Vector3(-6.75, 0.0, -9.95), "mode": "flip", "busy": false, "name": "tree"})
 
 	# Staubkörnchen im Abendlicht
 	motes = CPUParticles3D.new()
@@ -437,7 +439,7 @@ func _make_world() -> void:
 
 
 func _make_sounds() -> void:
-	for n in ["shot_player", "shot_enemy", "impact_brick", "impact_metal", "impact_card", "target_up", "target_down", "reload", "empty", "player_hit", "ambience"]:
+	for n in ["music", "boom", "pickup", "mega_appear", "warn", "throw", "shot_player", "shot_enemy", "impact_brick", "impact_metal", "impact_card", "target_up", "target_down", "reload", "empty", "player_hit", "ambience"]:
 		for ext in [".ogg", ".wav"]:
 			var p = "res://sfx/" + n + ext
 			if ResourceLoader.exists(p):
@@ -459,6 +461,19 @@ func _make_sounds() -> void:
 	add_child(ambience)
 	ambience.finished.connect(func(): ambience.play())
 	ambience.play()
+	music = AudioStreamPlayer.new()
+	music.stream = sounds.get("music")
+	add_child(music)
+	music.finished.connect(func(): music.play())
+	_music_apply()
+	if music.stream != null and not autotest:
+		music.play()
+
+
+func _music_apply() -> void:
+	if music == null:
+		return
+	music.volume_db = -80.0 if music_vol <= 0.01 else linear_to_db(music_vol) - 9.0
 
 
 # Spruch eines Gegners, kommt räumlich von seiner Position
@@ -589,7 +604,7 @@ func _tab_rect() -> Rect2:
 
 func _panel_rect() -> Rect2:
 	var vs = _vs()
-	return Rect2(vs.x - PANEL_W * panel_k, 74, PANEL_W, 458)
+	return Rect2(vs.x - PANEL_W * panel_k, 64, PANEL_W, 524)
 
 
 func _slider_rect(i: int) -> Rect2:
@@ -599,7 +614,7 @@ func _slider_rect(i: int) -> Rect2:
 
 func _panel_btn_rect(i: int) -> Rect2:
 	var pr = _panel_rect()
-	return Rect2(pr.position.x + 22, pr.position.y + 296 + i * 54, PANEL_W - 44, 44)
+	return Rect2(pr.position.x + 22, pr.position.y + 362 + i * 54, PANEL_W - 44, 44)
 
 
 func _done_btn_rect() -> Rect2:
@@ -612,6 +627,7 @@ func _slider_set(i: int, x: float) -> void:
 	var r = _slider_rect(i)
 	var k = clampf((x - r.position.x) / r.size.x, 0, 1)
 	set(sd.key, snappedf(lerpf(sd.min, sd.max, k), 0.05))
+	_music_apply()
 
 
 # Tipp auf Leiste, Regler oder Knöpfe im Bearbeiten-Modus. true = verbraucht
@@ -651,6 +667,8 @@ func _ui_press(p: Vector2, idx: int) -> bool:
 			aim_accel = 1.0
 			recenter = 0.6
 			aim_assist = 0.35
+			music_vol = 0.5
+			_music_apply()
 			thumb_n = Vector2(0.2, 0.64)
 			fire_n = Vector2(0.906, 0.7)
 			_save()
@@ -737,8 +755,8 @@ func _hud_draw(c: Control) -> void:
 		c.draw_circle(tc, 20, Color(1, 1, 1, 0.55 if held else 0.25))
 		if not held:
 			_text(c, tc + Vector2(-90, 92), "HOLD TO AIM", 15, Color(1, 1, 1, 0.75), HORIZONTAL_ALIGNMENT_CENTER, 180, font_light)
-		# Feuerknopf rechts
-		var fc = _fire_center()
+		# Feuerknopf rechts (bei offener Einstell-Leiste ausgeblendet)
+		var fc = _fire_center() + Vector2(4000.0 if panel_k > 0.3 else 0.0, 0)
 		var can = not cover
 		c.draw_circle(fc, 70, Color(0.55, 0.08, 0.04, 0.55 if can else 0.25))
 		c.draw_arc(fc, 70, 0, TAU, 48, Color(1, 0.75, 0.6, 0.85 if can else 0.3), 3.0, true)
@@ -746,7 +764,7 @@ func _hud_draw(c: Control) -> void:
 			c.draw_line(fc + d * 12, fc + d * 30, Color(1, 1, 1, 0.9 if can else 0.35), 3.0, true)
 		c.draw_arc(fc, 21, 0, TAU, 32, Color(1, 1, 1, 0.9 if can else 0.35), 3.0, true)
 		# Granaten-Knopf mit Anzahl
-		var gc = _nade_center()
+		var gc = _nade_center() + Vector2(4000.0 if panel_k > 0.3 else 0.0, 0)
 		var has = grenades > 0
 		c.draw_circle(gc, 44, Color(0.06, 0.05, 0.05, 0.55 if has else 0.3))
 		c.draw_arc(gc, 44, 0, TAU, 40, Color(0.7, 0.85, 0.45, 0.85 if has else 0.3), 2.5, true)
@@ -828,7 +846,7 @@ func _settings_draw(c: Control) -> void:
 			var val: float = get(sd.key)
 			var k = clampf((val - sd.min) / (sd.max - sd.min), 0, 1)
 			var vt: String
-			if sd.key == "recenter" or sd.key == "aim_assist":
+			if sd.key == "recenter" or sd.key == "aim_assist" or sd.key == "music_vol":
 				vt = "OFF" if val <= 0.001 else "%d %%" % roundi(val * 100.0)
 			elif sd.key == "aim_accel":
 				vt = "OFF" if val <= 0.001 else "%.1f" % val
@@ -1616,7 +1634,7 @@ func _enemy_grenade(e: Dictionary) -> void:
 	_launch(from, tp, 1.9, 4.2, "enade")
 	_bark(e, "fire", 1.0, 0.0, true)
 	_sfx("throw", -2.0, 0.08)
-	_sfx("warn", 0.0, 0.0)
+	_sfx("warn", 2.0, 0.0)
 	_show_msg("GRENADE!", "pop up and shoot it", 1.4)
 
 
@@ -2218,6 +2236,7 @@ func _load_save() -> void:
 		recenter = float(c.get_value("ctrl", "recenter", recenter))
 		aim_assist = float(c.get_value("ctrl", "aim_assist", aim_assist))
 		aim_mode = str(c.get_value("ctrl", "aim_mode", aim_mode))
+		music_vol = float(c.get_value("ctrl", "music_vol", music_vol))
 		thumb_n = c.get_value("ctrl", "thumb_n", thumb_n)
 		fire_n = c.get_value("ctrl", "fire_n", fire_n)
 
@@ -2232,6 +2251,7 @@ func _save() -> void:
 	c.set_value("ctrl", "recenter", recenter)
 	c.set_value("ctrl", "aim_assist", aim_assist)
 	c.set_value("ctrl", "aim_mode", aim_mode)
+	c.set_value("ctrl", "music_vol", music_vol)
 	c.set_value("ctrl", "thumb_n", thumb_n)
 	c.set_value("ctrl", "fire_n", fire_n)
 	c.save(SAVE_PATH)
@@ -2313,7 +2333,7 @@ func _autotest(dt: float) -> void:
 		cover = false
 		aim_idx = 99
 		thumb = _thumb_home() + Vector2(30, -20)
-		for n in ["window0", "door", "car", "crates", "tree", "window4"]:
+		for n in ["window0", "door", "car", "crates", "window4"]:
 			var e = _force_enemy(n)
 			e.aim = 99.0
 		at_step = 4
