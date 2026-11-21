@@ -85,6 +85,7 @@ var aim_sens = 1.7          # Grundempfindlichkeit
 var aim_accel = 1.0         # Beschleunigung bei schnellen Daumenbewegungen
 var recenter = 0.6          # wie schnell das Fadenkreuz beim Loslassen zur Mitte gleitet (0 = aus)
 var aim_assist = 0.35       # Zielhilfe: bremsen über Gegnern, sanftes Ziehen, knappe Fehlschüsse zählen
+var aim_mode = "snap"       # "snap": Daumenrichtung schnappt auf feste Zielzonen, "free": freies Zielen
 var thumb_n = Vector2(0.2, 0.64)    # Daumenfeld (Anteil der Bildschirmgröße)
 var fire_n = Vector2(0.906, 0.7)    # Feuerknopf
 const PANEL_W = 300.0
@@ -523,7 +524,7 @@ func _tab_rect() -> Rect2:
 
 func _panel_rect() -> Rect2:
 	var vs = _vs()
-	return Rect2(vs.x - PANEL_W * panel_k, 74, PANEL_W, 404)
+	return Rect2(vs.x - PANEL_W * panel_k, 74, PANEL_W, 458)
 
 
 func _slider_rect(i: int) -> Rect2:
@@ -572,11 +573,15 @@ func _ui_press(p: Vector2, idx: int) -> bool:
 				_slider_set(i, p.x)
 				return true
 		if _panel_btn_rect(0).has_point(p):
+			aim_mode = "free" if aim_mode == "snap" else "snap"
+			_save()
+		elif _panel_btn_rect(1).has_point(p):
 			editing = true
 			panel_open = false
 			cover = true
 			aim_idx = -1
-		elif _panel_btn_rect(1).has_point(p):
+		elif _panel_btn_rect(2).has_point(p):
+			aim_mode = "snap"
 			aim_sens = 1.7
 			aim_accel = 1.0
 			recenter = 0.6
@@ -751,7 +756,7 @@ func _settings_draw(c: Control) -> void:
 			c.draw_line(Vector2(r.position.x, cy), Vector2(r.end.x, cy), Color(1, 1, 1, 0.22), 4.0, true)
 			c.draw_line(Vector2(r.position.x, cy), Vector2(r.position.x + r.size.x * k, cy), Color(1.0, 0.78, 0.45), 4.0, true)
 			c.draw_circle(Vector2(r.position.x + r.size.x * k, cy), 11.0, Color.WHITE)
-		for i in 2:
+		for i in 3:
 			var br = _panel_btn_rect(i)
 			var bs = StyleBoxFlat.new()
 			bs.bg_color = Color(1, 1, 1, 0.1)
@@ -759,7 +764,7 @@ func _settings_draw(c: Control) -> void:
 			bs.set_border_width_all(1)
 			bs.set_corner_radius_all(22)
 			c.draw_style_box(bs, br)
-			_text(c, Vector2(br.position.x, br.position.y + 29), ["MOVE BUTTONS", "RESET"][i], 16, Color.WHITE, HORIZONTAL_ALIGNMENT_CENTER, br.size.x, font_light)
+			_text(c, Vector2(br.position.x, br.position.y + 29), [("AIM:  SNAP TO SPOTS" if aim_mode == "snap" else "AIM:  FREE"), "MOVE BUTTONS", "RESET"][i], 16, Color.WHITE, HORIZONTAL_ALIGNMENT_CENTER, br.size.x, font_light)
 		_text(c, Vector2(pr.position.x, pr.end.y + 24), "Enemies wait while this is open", 13, Color(1, 1, 1, 0.6 * panel_k), HORIZONTAL_ALIGNMENT_CENTER, PANEL_W, font_light)
 	if editing:
 		c.draw_rect(Rect2(Vector2.ZERO, vs), Color(0, 0, 0, 0.25))
@@ -879,6 +884,12 @@ func _process(dt: float) -> void:
 	panel_k = move_toward(panel_k, 1.0 if (panel_open and state == "play") else 0.0, dt / 0.18)
 	if state != "play":
 		editing = false
+	# Snap: Fadenkreuz gleitet auf die Zone in Daumenrichtung und schwankt dort leicht wie eine ruhige Hand
+	if aim_idx >= 0 and aim_mode == "snap" and state == "play" and not editing:
+		var tgt = _snap_target()
+		var tt = Time.get_ticks_msec() / 1000.0
+		var sway = Vector2(sin(tt * 1.3) * 2.6 + sin(tt * 3.1 + 1.0) * 1.2, sin(tt * 1.7 + 2.0) * 2.0 + sin(tt * 2.6) * 1.0)
+		aim = aim.lerp(tgt + sway, 1.0 - exp(-dt * 17.0))
 	# losgelassen: Fadenkreuz gleitet zurück zur Bildmitte
 	if aim_idx < 0 and recenter > 0.0:
 		aim = aim.lerp(_vs() * Vector2(0.5, 0.45), 1.0 - exp(-dt * recenter * 12.0))
@@ -1152,6 +1163,8 @@ func _input(ev: InputEvent) -> void:
 				thumb_n = (ev.position / vs).clamp(Vector2(0.06, 0.12), Vector2(0.94, 0.9))
 			elif ui_drag == "fire":
 				fire_n = (ev.position / vs).clamp(Vector2(0.06, 0.12), Vector2(0.94, 0.9))
+		elif ev.index == aim_idx and state == "play" and aim_mode == "snap":
+			thumb = ev.position
 		elif ev.index == aim_idx and state == "play":
 			# Beschleunigung: langsame Bewegung bleibt fein, schnelle trägt weiter
 			var v = ev.velocity.length()
@@ -1249,6 +1262,31 @@ func _shoot(p: Vector2) -> void:
 			_show_msg("STAGE %d" % stage, "+25 HEALTH", 2.2)
 	else:
 		_impact(hit, true)
+
+
+# Snap-Modus: Daumenweg vom Aufsetzpunkt zeigt in eine Richtung, das Fadenkreuz nimmt die feste Zone,
+# die dort am nächsten liegt. Steht in einer Zone gerade ein Gegner, zielt es auf ihn.
+func _snap_target() -> Vector2:
+	var vs = _vs()
+	var center = vs * Vector2(0.5, 0.45)
+	var v = center + (thumb - thumb0) * (2.8 * aim_sens / 1.7)
+	var best_p = center
+	var bd = 1e9
+	for sl in slots:
+		var wp: Vector3 = sl.pos + Vector3(0, ENEMY_H * 0.73, 0)
+		var live = false
+		for e in enemies:
+			if e.slot == sl and e.state != "fall" and e.state != "hide" and is_instance_valid(e.mi):
+				wp = e.mi.global_transform * Vector3(0, (1.0 - e.gun_v - 0.04) * e.h, 0)
+				live = e.state == "aim" or (e.state == "appear" and e.t > 0.2)
+		if cam.is_position_behind(wp):
+			continue
+		var sp = cam.unproject_position(wp)
+		var d = v.distance_to(sp) * (0.75 if live else 1.0)
+		if d < bd:
+			bd = d
+			best_p = sp
+	return best_p
 
 
 # Zielhilfe: nächster sichtbarer Gegner um einen Bildschirmpunkt (Brustbereich, Radius in Bildpunkten)
@@ -1531,6 +1569,7 @@ func _load_save() -> void:
 		aim_accel = float(c.get_value("ctrl", "aim_accel", aim_accel))
 		recenter = float(c.get_value("ctrl", "recenter", recenter))
 		aim_assist = float(c.get_value("ctrl", "aim_assist", aim_assist))
+		aim_mode = str(c.get_value("ctrl", "aim_mode", aim_mode))
 		thumb_n = c.get_value("ctrl", "thumb_n", thumb_n)
 		fire_n = c.get_value("ctrl", "fire_n", fire_n)
 
@@ -1544,6 +1583,7 @@ func _save() -> void:
 	c.set_value("ctrl", "aim_accel", aim_accel)
 	c.set_value("ctrl", "recenter", recenter)
 	c.set_value("ctrl", "aim_assist", aim_assist)
+	c.set_value("ctrl", "aim_mode", aim_mode)
 	c.set_value("ctrl", "thumb_n", thumb_n)
 	c.set_value("ctrl", "fire_n", fire_n)
 	c.save(SAVE_PATH)
@@ -1632,8 +1672,14 @@ func _autotest(dt: float) -> void:
 	elif at_step == 4 and at_t > 6.4:
 		aim = _vs() * Vector2(0.55, 0.45)
 		_snap("04_enemies")
+		# Snap-Test: Daumen nach links oben ziehen
+		aim_mode = "snap"
+		thumb0 = _thumb_home()
+		thumb = thumb0 + Vector2(-140, -110)
 		at_step = 5
 	elif at_step == 5 and at_t > 6.6:
+		_snap("04s_snap_upleft")
+		print("SNAP aim ", aim, " target ", _snap_target())
 		# auf den Gegner an der Tür schießen
 		for e in enemies:
 			if e.slot.name == "door":
