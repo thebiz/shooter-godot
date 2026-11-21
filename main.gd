@@ -80,7 +80,22 @@ var tip_t = 0.0
 var aim_idx = -1
 var thumb = Vector2.ZERO
 var thumb0 = Vector2.ZERO
-const AIM_SENS = 1.7
+# Steuerung (im Handy gespeichert, über die Leiste am rechten Rand einstellbar)
+var aim_sens = 1.7          # Grundempfindlichkeit
+var aim_accel = 1.0         # Beschleunigung bei schnellen Daumenbewegungen
+var recenter = 0.6          # wie schnell das Fadenkreuz beim Loslassen zur Mitte gleitet (0 = aus)
+var thumb_n = Vector2(0.2, 0.64)    # Daumenfeld (Anteil der Bildschirmgröße)
+var fire_n = Vector2(0.906, 0.7)    # Feuerknopf
+const PANEL_W = 300.0
+const SLIDERS = [
+	{"label": "AIM SPEED", "key": "aim_sens", "min": 0.6, "max": 3.5},
+	{"label": "ACCELERATION", "key": "aim_accel", "min": 0.0, "max": 3.0},
+	{"label": "RETURN TO CENTER", "key": "recenter", "min": 0.0, "max": 1.0}]
+var panel_open = false
+var panel_k = 0.0
+var editing = false
+var ui_idx = -1             # Finger, der gerade einen Regler oder Knopf zieht
+var ui_drag = ""            # "slider0".., "thumb", "fire"
 var holes_live = []
 var shots_fired = 0
 var fx_k = 1.0
@@ -487,13 +502,87 @@ func _text(c: Control, pos: Vector2, s: String, size: int, col: Color = Color.WH
 
 
 func _thumb_home() -> Vector2:
-	var vs = _vs()
-	return Vector2(vs.x * 0.2, vs.y * 0.64)
+	return _vs() * thumb_n
 
 
 func _fire_center() -> Vector2:
+	return _vs() * fire_n
+
+
+func _frozen() -> bool:
+	# Einstell-Leiste offen oder Knöpfe verschieben: Gegner warten
+	return panel_k > 0.02 or editing
+
+
+func _tab_rect() -> Rect2:
 	var vs = _vs()
-	return Vector2(vs.x - 150, vs.y - 215)
+	return Rect2(vs.x - PANEL_W * panel_k - 34, vs.y * 0.42 - 48, 34, 96)
+
+
+func _panel_rect() -> Rect2:
+	var vs = _vs()
+	return Rect2(vs.x - PANEL_W * panel_k, 74, PANEL_W, 372)
+
+
+func _slider_rect(i: int) -> Rect2:
+	var pr = _panel_rect()
+	return Rect2(pr.position.x + 22, pr.position.y + 18 + i * 80 + 40, PANEL_W - 44, 26)
+
+
+func _panel_btn_rect(i: int) -> Rect2:
+	var pr = _panel_rect()
+	return Rect2(pr.position.x + 22, pr.position.y + 268 + i * 54, PANEL_W - 44, 44)
+
+
+func _done_btn_rect() -> Rect2:
+	var vs = _vs()
+	return Rect2(vs.x * 0.5 - 90, 92, 180, 50)
+
+
+func _slider_set(i: int, x: float) -> void:
+	var sd = SLIDERS[i]
+	var r = _slider_rect(i)
+	var k = clampf((x - r.position.x) / r.size.x, 0, 1)
+	set(sd.key, snappedf(lerpf(sd.min, sd.max, k), 0.05))
+
+
+# Tipp auf Leiste, Regler oder Knöpfe im Bearbeiten-Modus. true = verbraucht
+func _ui_press(p: Vector2, idx: int) -> bool:
+	if editing:
+		if _done_btn_rect().grow(10).has_point(p):
+			editing = false
+			_save()
+		elif p.distance_to(_thumb_home()) < 95:
+			ui_idx = idx
+			ui_drag = "thumb"
+		elif p.distance_to(_fire_center()) < 95:
+			ui_idx = idx
+			ui_drag = "fire"
+		return true
+	if _tab_rect().grow(8).has_point(p):
+		panel_open = not panel_open
+		return true
+	if panel_k > 0.5 and _panel_rect().has_point(p):
+		for i in SLIDERS.size():
+			if _slider_rect(i).grow(14).has_point(p):
+				ui_idx = idx
+				ui_drag = "slider%d" % i
+				_slider_set(i, p.x)
+				return true
+		if _panel_btn_rect(0).has_point(p):
+			editing = true
+			panel_open = false
+			cover = true
+			aim_idx = -1
+		elif _panel_btn_rect(1).has_point(p):
+			aim_sens = 1.7
+			aim_accel = 1.0
+			recenter = 0.6
+			thumb_n = Vector2(0.2, 0.64)
+			fire_n = Vector2(0.906, 0.7)
+			_save()
+		return true
+	return false
 
 
 func _upd_btn_rect() -> Rect2:
@@ -564,7 +653,7 @@ func _hud_draw(c: Control) -> void:
 		_text(c, Vector2(vs.x - 34, vs.y - 43), "/%d" % MAG, 17, Color(1, 1, 1, 0.55), HORIZONTAL_ALIGNMENT_LEFT, -1, font_light)
 	if state == "play":
 		# linkes Daumenfeld: halten = aufstehen und zielen
-		var tc = thumb if aim_idx >= 0 else _thumb_home()
+		var tc = thumb if (aim_idx >= 0 and not editing) else _thumb_home()
 		var held = aim_idx >= 0
 		c.draw_circle(tc, 62, Color(0.06, 0.05, 0.05, 0.4 if held else 0.3))
 		c.draw_arc(tc, 62, 0, TAU, 48, Color(1, 1, 1, 0.7 if held else 0.35), 2.5, true)
@@ -587,8 +676,10 @@ func _hud_draw(c: Control) -> void:
 		if tip_t > 0:
 			var ta = clampf(tip_t, 0, 1)
 			_text(c, Vector2(0, vs.y - 30), "Left thumb: hold to stand up and drag to aim  ·  let go to take cover and reload  ·  right: FIRE", 17, Color(1, 1, 1, 0.8 * ta), HORIZONTAL_ALIGNMENT_CENTER, vs.x, font_light)
+	if state == "play":
+		_settings_draw(c)
 	# große Meldungen
-	if msg_t > 0 and msg != "":
+	if msg_t > 0 and msg != "" and not editing:
 		var a = clampf(msg_t * 2.5, 0, 1)
 		var sc = 1.0 + maxf(0.0, 0.25 - (msg_dur - msg_t)) * 1.6
 		_text(c, Vector2(0, vs.y * 0.42), msg, int(64 * sc), Color(1, 0.93, 0.8, a), HORIZONTAL_ALIGNMENT_CENTER, vs.x)
@@ -609,6 +700,75 @@ func _hud_draw(c: Control) -> void:
 		var a = clampf((st_t - 1.2) * 2.0, 0, 1)
 		_text(c, Vector2(0, vs.y * 0.62), "TAP TO PLAY AGAIN", 26, Color(1, 1, 1, a * (0.45 + 0.55 * absf(sin(st_t * 2.6)))), HORIZONTAL_ALIGNMENT_CENTER, vs.x)
 		_upd_draw(c, a)
+
+
+func _settings_draw(c: Control) -> void:
+	var vs = _vs()
+	# Lasche am rechten Rand
+	var tr = _tab_rect()
+	var sb = StyleBoxFlat.new()
+	sb.bg_color = Color(0.06, 0.05, 0.05, 0.6)
+	sb.border_color = Color(1, 1, 1, 0.18)
+	sb.set_border_width_all(1)
+	sb.corner_radius_top_left = 10
+	sb.corner_radius_bottom_left = 10
+	c.draw_style_box(sb, tr)
+	var tc = tr.get_center()
+	for i in 3:
+		var y = tc.y - 12 + i * 12
+		c.draw_line(Vector2(tc.x - 7, y), Vector2(tc.x + 7, y), Color(1, 1, 1, 0.8), 2.0, true)
+		var kx = tc.x - 7 + [10, 3, 8][i]
+		c.draw_circle(Vector2(kx, y), 3.2, Color.WHITE)
+	if panel_k > 0.01:
+		var pr = _panel_rect()
+		var ps = StyleBoxFlat.new()
+		ps.bg_color = Color(0.06, 0.05, 0.05, 0.62)
+		ps.border_color = Color(1, 1, 1, 0.14)
+		ps.border_width_left = 1
+		ps.border_width_top = 1
+		ps.border_width_bottom = 1
+		ps.corner_radius_top_left = 12
+		ps.corner_radius_bottom_left = 12
+		c.draw_style_box(ps, pr)
+		for i in SLIDERS.size():
+			var sd = SLIDERS[i]
+			var r = _slider_rect(i)
+			var val: float = get(sd.key)
+			var k = clampf((val - sd.min) / (sd.max - sd.min), 0, 1)
+			var vt: String
+			if sd.key == "recenter":
+				vt = "OFF" if val <= 0.001 else "%d %%" % roundi(val * 100.0)
+			elif sd.key == "aim_accel":
+				vt = "OFF" if val <= 0.001 else "%.1f" % val
+			else:
+				vt = "%.1f ×" % val
+			_text(c, Vector2(r.position.x, r.position.y - 12), sd.label, 14, Color(1, 1, 1, 0.75), HORIZONTAL_ALIGNMENT_LEFT, -1, font_light)
+			_text(c, Vector2(r.position.x, r.position.y - 12), vt, 16, Color.WHITE, HORIZONTAL_ALIGNMENT_RIGHT, r.size.x)
+			var cy = r.get_center().y
+			c.draw_line(Vector2(r.position.x, cy), Vector2(r.end.x, cy), Color(1, 1, 1, 0.22), 4.0, true)
+			c.draw_line(Vector2(r.position.x, cy), Vector2(r.position.x + r.size.x * k, cy), Color(1.0, 0.78, 0.45), 4.0, true)
+			c.draw_circle(Vector2(r.position.x + r.size.x * k, cy), 11.0, Color.WHITE)
+		for i in 2:
+			var br = _panel_btn_rect(i)
+			var bs = StyleBoxFlat.new()
+			bs.bg_color = Color(1, 1, 1, 0.1)
+			bs.border_color = Color(1, 1, 1, 0.35)
+			bs.set_border_width_all(1)
+			bs.set_corner_radius_all(22)
+			c.draw_style_box(bs, br)
+			_text(c, Vector2(br.position.x, br.position.y + 29), ["MOVE BUTTONS", "RESET"][i], 16, Color.WHITE, HORIZONTAL_ALIGNMENT_CENTER, br.size.x, font_light)
+		_text(c, Vector2(pr.position.x, pr.end.y + 24), "Enemies wait while this is open", 13, Color(1, 1, 1, 0.6 * panel_k), HORIZONTAL_ALIGNMENT_CENTER, PANEL_W, font_light)
+	if editing:
+		c.draw_rect(Rect2(Vector2.ZERO, vs), Color(0, 0, 0, 0.25))
+		_text(c, Vector2(0, 178), "Drag the buttons where your thumbs like them", 20, Color.WHITE, HORIZONTAL_ALIGNMENT_CENTER, vs.x, font_light)
+		var dr = _done_btn_rect()
+		var ds = StyleBoxFlat.new()
+		ds.bg_color = Color(0.95, 0.62, 0.2, 0.95)
+		ds.set_corner_radius_all(25)
+		c.draw_style_box(ds, dr)
+		_text(c, Vector2(dr.position.x, dr.position.y + 34), "DONE", 20, Color(0.1, 0.06, 0.03), HORIZONTAL_ALIGNMENT_CENTER, dr.size.x)
+		for pnt in [_thumb_home(), _fire_center()]:
+			c.draw_arc(pnt, 86, 0, TAU, 56, Color(1.0, 0.78, 0.45, 0.9), 2.0, true)
 
 
 func _upd_draw(c: Control, a: float) -> void:
@@ -713,6 +873,12 @@ func _process(dt: float) -> void:
 	hurt = maxf(0.0, hurt - dt * 1.6)
 	hit_mark = maxf(0.0, hit_mark - dt * 3.0)
 	vignette.modulate.a = hurt
+	panel_k = move_toward(panel_k, 1.0 if (panel_open and state == "play") else 0.0, dt / 0.18)
+	if state != "play":
+		editing = false
+	# losgelassen: Fadenkreuz gleitet zurück zur Bildmitte
+	if aim_idx < 0 and recenter > 0.0:
+		aim = aim.lerp(_vs() * Vector2(0.5, 0.45), 1.0 - exp(-dt * recenter * 12.0))
 
 	# Pop-up-Buch: Kulissen klappen auf oder zu
 	for c in cards:
@@ -769,6 +935,8 @@ func _play_update(dt: float) -> void:
 		max_alive = 2
 	if stage >= 3:
 		max_alive = 3
+	if _frozen():
+		return
 	spawn_t -= dt
 	if spawn_t <= 0 and alive < max_alive:
 		_spawn()
@@ -826,6 +994,9 @@ func _enemies_update(dt: float) -> void:
 					e.t = 0.0
 			"aim":
 				_enemy_pose(e, 1.0)
+				if _frozen():
+					e.t -= dt
+					continue
 				e.seen += dt
 				if state != "play":
 					continue
@@ -961,14 +1132,28 @@ func _input(ev: InputEvent) -> void:
 	if ev is InputEventScreenTouch:
 		if ev.pressed:
 			_press(ev.position, ev.index)
+		elif ev.index == ui_idx:
+			ui_idx = -1
+			ui_drag = ""
+			_save()
 		elif ev.index == aim_idx:
-			# Daumen weg: zurück in Deckung (lädt automatisch nach)
+			# Daumen weg: zurück in Deckung (lädt automatisch nach), Fadenkreuz gleitet zur Mitte
 			aim_idx = -1
 			cover = true
 	elif ev is InputEventScreenDrag:
-		if ev.index == aim_idx and state == "play":
-			var vs = _vs()
-			aim = (aim + ev.relative * AIM_SENS).clamp(Vector2(20, 20), vs - Vector2(20, 20))
+		var vs = _vs()
+		if ev.index == ui_idx:
+			if ui_drag.begins_with("slider"):
+				_slider_set(int(ui_drag.substr(6)), ev.position.x)
+			elif ui_drag == "thumb":
+				thumb_n = (ev.position / vs).clamp(Vector2(0.06, 0.12), Vector2(0.94, 0.9))
+			elif ui_drag == "fire":
+				fire_n = (ev.position / vs).clamp(Vector2(0.06, 0.12), Vector2(0.94, 0.9))
+		elif ev.index == aim_idx and state == "play":
+			# Beschleunigung: langsame Bewegung bleibt fein, schnelle trägt weiter
+			var v = ev.velocity.length()
+			var gain = aim_sens * (1.0 + aim_accel * clampf((v - 250.0) / 1300.0, 0.0, 1.6))
+			aim = (aim + ev.relative * gain).clamp(Vector2(20, 20), vs - Vector2(20, 20))
 			thumb = ev.position
 
 
@@ -993,14 +1178,17 @@ func _press(p: Vector2, idx: int = 0) -> void:
 			_open_book(0.45)
 			_start_game()
 		"play":
-			if p.x < _vs().x * 0.5:
-				# linker Daumen drauf: aufstehen, ziehen bewegt das Fadenkreuz
+			if _ui_press(p, idx):
+				return
+			if p.distance_to(_fire_center()) < 105:
+				if not cover:
+					_shoot(aim)
+			elif aim_idx < 0:
+				# Daumen drauf: aufstehen, ziehen bewegt das Fadenkreuz
 				aim_idx = idx
 				thumb = p
 				thumb0 = p
 				cover = false
-			elif not cover:
-				_shoot(aim)
 
 
 func _shoot(p: Vector2) -> void:
@@ -1293,11 +1481,23 @@ func _load_save() -> void:
 	var c = ConfigFile.new()
 	if c.load(SAVE_PATH) == OK:
 		best = int(c.get_value("game", "best", 0))
+		aim_sens = float(c.get_value("ctrl", "aim_sens", aim_sens))
+		aim_accel = float(c.get_value("ctrl", "aim_accel", aim_accel))
+		recenter = float(c.get_value("ctrl", "recenter", recenter))
+		thumb_n = c.get_value("ctrl", "thumb_n", thumb_n)
+		fire_n = c.get_value("ctrl", "fire_n", fire_n)
 
 
 func _save() -> void:
+	if autotest:
+		return
 	var c = ConfigFile.new()
 	c.set_value("game", "best", best)
+	c.set_value("ctrl", "aim_sens", aim_sens)
+	c.set_value("ctrl", "aim_accel", aim_accel)
+	c.set_value("ctrl", "recenter", recenter)
+	c.set_value("ctrl", "thumb_n", thumb_n)
+	c.set_value("ctrl", "fire_n", fire_n)
 	c.save(SAVE_PATH)
 
 
@@ -1420,9 +1620,19 @@ func _autotest(dt: float) -> void:
 		_snap("08_cover_impact")
 		at_step = 12
 	elif at_step == 12 and at_t > 9.0:
+		panel_open = true
+		at_step = 120
+	elif at_step == 120 and at_t > 9.5:
+		_snap("08b_panel")
+		panel_open = false
+		editing = true
+		at_step = 121
+	elif at_step == 121 and at_t > 9.8:
+		_snap("08c_edit")
+		editing = false
 		cover = false
 		health = 0
 		at_step = 13
-	elif at_step == 13 and at_t > 11.5:
+	elif at_step == 13 and at_t > 12.3:
 		_snap("09_game_over")
 		get_tree().quit()
