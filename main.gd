@@ -68,7 +68,12 @@ var health = 100.0
 var score = 0
 var best = 0
 var kills = 0
-var stage = 1
+var stage = 1               # Runde der Campaign
+var reserve = 0             # Munition außerhalb des Magazins (pro Runde knapp bemessen)
+var round_kills = 0
+var round_goal = 10
+var out_t = -1.0            # läuft, wenn die Munition ganz leer ist
+var over_reason = ""
 var spawn_t = 1.0
 var aim = Vector2(640, 330)
 var aim_n = Vector2.ZERO
@@ -142,6 +147,7 @@ static var upd_done = false
 var autotest = false
 var at_t = 0.0
 var at_step = 0
+var forcing = false
 
 
 # ================================================================ Aufbau
@@ -408,7 +414,10 @@ func _make_world() -> void:
 			slots.append({"pos": Vector3(x, ybot, FAC_Z - 0.3), "mode": "flip", "busy": false, "name": "door"})
 		else:
 			slots.append({"pos": Vector3(x, ybot - 0.74, FAC_Z - 0.32), "mode": "flip", "busy": false, "name": "window%d" % i})
-	slots.append({"pos": Vector3(-2.55, 0.0, -7.4), "mode": "flip", "busy": false, "name": "crates"})
+	slots.append({"pos": Vector3(-2.55, 0.0, -7.4), "mode": "flip", "busy": false, "name": "crates", "partner": "window4"})
+	for sl in slots:
+		if sl.name == "window4":
+			sl.partner = "crates"
 	slots.append({"pos": Vector3(4.25, 0.28, -8.75), "mode": "flip", "busy": false, "name": "car"})
 
 	# Staubkörnchen im Abendlicht
@@ -475,8 +484,11 @@ func _music_apply() -> void:
 	if music == null:
 		return
 	# im Menü und nach Game Over voll, während der Runde leiser, damit man Schüsse und Stimmen hört
-	var v = music_vol * lerpf(0.3, 1.0, music_k)
-	music.volume_db = -80.0 if v <= 0.005 else linear_to_db(v) - 4.0
+	if music_vol <= 0.01:
+		music.volume_db = -80.0
+		return
+	var base = linear_to_db(music_vol)
+	music.volume_db = lerpf(base - 14.0, base + 4.0, music_k)
 
 
 # Spruch eines Gegners, kommt räumlich von seiner Position
@@ -734,7 +746,7 @@ func _hud_draw(c: Control) -> void:
 		_text(c, Vector2(vs.x - 252, 51), "SCORE", 17, Color(1, 1, 1, 0.7), HORIZONTAL_ALIGNMENT_LEFT, -1, font_light)
 		_text(c, Vector2(vs.x - 252, 52), "%06d" % score, 28, Color.WHITE, HORIZONTAL_ALIGNMENT_RIGHT, 214)
 		# Stufe und Treffer oben Mitte
-		_text(c, Vector2(0, 50), "STAGE %d  ·  %d / %d" % [stage, kills % KILLS_PER_STAGE, KILLS_PER_STAGE], 17, Color(1, 1, 1, 0.75), HORIZONTAL_ALIGNMENT_CENTER, vs.x, font_light)
+		_text(c, Vector2(0, 50), "ROUND %d  ·  %d / %d" % [stage, mini(round_kills, round_goal), round_goal], 17, Color(1, 1, 1, 0.75), HORIZONTAL_ALIGNMENT_CENTER, vs.x, font_light)
 		# Munition unten rechts
 		_panel(c, Rect2(vs.x - 250, vs.y - 86, 230, 66))
 		if weapon != "pistol":
@@ -742,13 +754,13 @@ func _hud_draw(c: Control) -> void:
 			_text(c, Vector2(vs.x - 92, vs.y - 43), "%d" % wpn_ammo, 34, Color.WHITE, HORIZONTAL_ALIGNMENT_RIGHT, 70)
 		else:
 			for i in MAG:
-				var bx = vs.x - 232 + i * 17
+				var bx = vs.x - 236 + i * 14
 				var full = i < ammo
 				var bc = Color(1.0, 0.82, 0.45) if full else Color(1, 1, 1, 0.16)
 				c.draw_rect(Rect2(bx, vs.y - 70, 9, 24), bc)
 				c.draw_circle(Vector2(bx + 4.5, vs.y - 70), 4.5, bc)
-			_text(c, Vector2(vs.x - 92, vs.y - 43), "%d" % ammo, 34, Color.WHITE, HORIZONTAL_ALIGNMENT_RIGHT, 56)
-			_text(c, Vector2(vs.x - 34, vs.y - 43), "/%d" % MAG, 17, Color(1, 1, 1, 0.55), HORIZONTAL_ALIGNMENT_LEFT, -1, font_light)
+			_text(c, Vector2(vs.x - 112, vs.y - 43), "%d" % ammo, 34, Color.WHITE, HORIZONTAL_ALIGNMENT_RIGHT, 56)
+			_text(c, Vector2(vs.x - 54, vs.y - 43), "/%d" % reserve, 17, Color(1, 0.55, 0.45, 0.9) if reserve <= 3 else Color(1, 1, 1, 0.55), HORIZONTAL_ALIGNMENT_LEFT, -1, font_light)
 	if state == "play":
 		# linkes Daumenfeld: halten = aufstehen und zielen
 		var tc = thumb if (aim_idx >= 0 and not editing) else _thumb_home()
@@ -781,7 +793,7 @@ func _hud_draw(c: Control) -> void:
 				var bl = 0.5 + 0.5 * sin(st_t * 18.0)
 				c.draw_arc(gsp, 34, 0, TAU, 36, Color(1.0, 0.2, 0.1, 0.6 + 0.4 * bl), 3.5, true)
 				c.draw_arc(gsp, 50, 0, TAU, 36, Color(1.0, 0.2, 0.1, 0.35 * bl), 2.0, true)
-		if ammo == 0 and not cover and reload_t <= 0:
+		if ammo == 0 and reserve > 0 and not cover and reload_t <= 0:
 			var bl = 0.55 + 0.45 * sin(st_t * 10.0)
 			_text(c, Vector2(0, vs.y * 0.66), "RELOAD  –  LET GO TO TAKE COVER", 30, Color(1, 0.85, 0.4, bl), HORIZONTAL_ALIGNMENT_CENTER, vs.x)
 		if cover and reload_t > 0:
@@ -939,7 +951,10 @@ func _start_game() -> void:
 	score = 0
 	kills = 0
 	stage = 1
-	ammo = MAG
+	round_kills = 0
+	out_t = -1.0
+	over_reason = ""
+	_round_setup()
 	weapon = "pistol"
 	wpn_ammo = 0
 	grenades = 1
@@ -960,7 +975,28 @@ func _start_game() -> void:
 	hits = 0
 	tip_t = 7.0
 	_set_state("intro")
-	_show_msg("GET READY", "", 2.2)
+	_show_msg("ROUND 1", "%d enemies  ·  %d bullets" % [round_goal, ammo + reserve], 2.4)
+
+
+# Runde vorbereiten: feste Gegnerzahl, knappe Munition (Gegner plus Reserve für Fehlschüsse)
+func _round_setup() -> void:
+	round_goal = 10 + (stage - 1) * 3
+	var spare = maxi(3, 6 - stage)
+	var pool = round_goal + spare
+	ammo = mini(MAG, pool)
+	reserve = pool - ammo
+	round_kills = 0
+
+
+func _round_clear() -> void:
+	var left = ammo + reserve
+	var bonus = left * 50 + int(health) * 5
+	score += bonus
+	stage += 1
+	health = minf(100.0, health + 25.0)
+	_round_setup()
+	_show_msg("ROUND %d" % stage, "clear bonus +%d  ·  %d enemies  ·  %d bullets" % [bonus, round_goal, ammo + reserve], 2.8)
+	spawn_t = 3.0
 
 
 func _game_over() -> void:
@@ -977,7 +1013,7 @@ func _game_over() -> void:
 	var acc = 0
 	if shots_fired > 0:
 		acc = roundi(100.0 * hits / shots_fired)
-	_show_msg("GAME OVER", ("NEW BEST  %06d" % score) if newbest else ("SCORE %06d  ·  BEST %06d  ·  ACCURACY %d%%" % [score, best, acc]), 999.0)
+	_show_msg(over_reason if over_reason != "" else "GAME OVER", ("NEW BEST  %06d" % score) if newbest else ("SCORE %06d  ·  BEST %06d  ·  ACCURACY %d%%" % [score, best, acc]), 999.0)
 	for e in enemies:
 		if e.state != "fall":
 			e.state = "hide"
@@ -1055,13 +1091,15 @@ func _process(dt: float) -> void:
 
 func _play_update(dt: float) -> void:
 	# Nachladen nur in Deckung
-	if cover and ammo < MAG:
+	if cover and ammo < MAG and reserve > 0:
 		if reload_t <= 0:
 			reload_t = RELOAD_TIME
 			_sfx("reload", -3.0, 0.03)
 		reload_t -= dt
 		if reload_t <= 0:
-			ammo = MAG
+			var take = mini(MAG - ammo, reserve)
+			ammo += take
+			reserve -= take
 			reload_t = 0.0
 	elif not cover:
 		reload_t = 0.0
@@ -1097,7 +1135,7 @@ func _play_update(dt: float) -> void:
 		if e.state != "fall" and not e.get("box", false):
 			alive += 1
 	var max_alive = 1
-	if kills >= 4:
+	if round_kills >= 4 or stage >= 2:
 		max_alive = 2
 	if stage >= 3:
 		max_alive = 3
@@ -1108,18 +1146,29 @@ func _play_update(dt: float) -> void:
 		_spawn()
 		var base = maxf(0.6, 1.9 - stage * 0.25)
 		spawn_t = base * randf_range(0.6, 1.25)
+	if ammo + reserve <= 0 and weapon == "pistol" and grenades <= 0:
+		if out_t < 0.0:
+			out_t = 1.4
+			_show_msg("OUT OF AMMO", "", 1.4)
+		out_t -= dt
+		if out_t <= 0.0:
+			over_reason = "OUT OF AMMO"
+			_game_over()
+			return
+	else:
+		out_t = -1.0
 	if health <= 0:
 		_game_over()
 
 
 func _diff_aim() -> float:
-	return maxf(0.75, 1.75 - (stage - 1) * 0.2 - kills % KILLS_PER_STAGE * 0.015)
+	return maxf(0.75, 1.75 - (stage - 1) * 0.15 - round_kills * 0.015)
 
 
 func _spawn() -> void:
 	var free = []
 	for s in slots:
-		if not s.busy and not s.get("off", false):
+		if not s.busy and not s.get("off", false) and not _partner_busy(s):
 			free.append(s)
 	if free.is_empty():
 		return
@@ -1141,6 +1190,16 @@ func _spawn() -> void:
 	enemies.append(c)
 	_sfx("target_up", -6.0, 0.12)
 	_bark(c, "appear", 0.55, 0.25)
+
+
+# Kisten-Spot und das Fenster dahinter liegen aus Spielersicht übereinander: nie beide gleichzeitig besetzt
+func _partner_busy(s: Dictionary) -> bool:
+	if forcing or not s.has("partner"):
+		return false
+	for o in slots:
+		if o.name == s.partner:
+			return o.busy
+	return false
 
 
 func _spawn_box(s: Dictionary, mega: bool) -> void:
@@ -1200,8 +1259,11 @@ func _open_box(c: Dictionary) -> void:
 		pts = 250
 	else:
 		var x = randf()
-		r = "grenade" if x < 0.3 else ("health" if x < 0.55 else ("shotgun" if x < 0.8 else "smg"))
+		r = "ammo" if x < 0.32 else ("grenade" if x < 0.52 else ("health" if x < 0.7 else ("shotgun" if x < 0.86 else "smg")))
 	match r:
+		"ammo":
+			reserve += 6
+			title = "+6 BULLETS"
 		"grenade":
 			grenades += 1
 			title = "+1 GRENADE"
@@ -1257,10 +1319,11 @@ func _kill_enemy(c: Dictionary, point: Vector3, head: bool) -> void:
 			_bark(o, "mandown", 0.5, 0.75, true)
 			break
 	_float_text(point + Vector3(0, 0.25, 0.1), ("HEADSHOT  +%d" if head else "+%d") % pts, head)
-	if kills % KILLS_PER_STAGE == 0:
-		stage += 1
-		health = minf(100.0, health + 25.0)
-		_show_msg("STAGE %d" % stage, "+25 HEALTH", 2.2)
+	round_kills += 1
+	if round_kills >= round_goal and state == "play":
+		get_tree().create_timer(0.9).timeout.connect(func():
+			if state == "play":
+				_round_clear())
 
 
 func _enemy_pose(e: Dictionary, k: float) -> void:
@@ -1951,7 +2014,9 @@ func _snap_target() -> Vector2:
 			if e.slot == sl and e.state != "fall" and e.state != "hide" and is_instance_valid(e.mi):
 				wp = e.mi.global_transform * Vector3(0, (1.0 - e.gun_v - 0.04) * e.h, 0)
 				live = e.state == "aim" or (e.state == "appear" and e.t > 0.2)
-		if cam.is_position_behind(wp):
+		if cam.is_position_behind(wp) or sl.get("off", false):
+			continue
+		if not sl.busy and _partner_busy(sl):
 			continue
 		var sp = cam.unproject_position(wp)
 		var d = v.distance_to(sp) * (0.75 if live else 1.0)
@@ -2311,7 +2376,9 @@ func _force_enemy(slot_name: String) -> Dictionary:
 			for o in slots:
 				o.busy = true
 			s.busy = false
+			forcing = true
 			_spawn()
+			forcing = false
 			for o in slots:
 				o.busy = false
 			for e in enemies:
@@ -2366,6 +2433,7 @@ func _autotest(dt: float) -> void:
 				var tg = _assist_nearest(Vector2.ZERO, 1e9)
 				aim = cam.unproject_position(e.mi.global_transform * Vector3(0, e.h * (1.0 - e.gun_v), 0)) + Vector2(28, 0)
 				var before = kills
+				round_goal = round_kills + 1
 				_shoot(aim)
 				print("ASSIST test kills ", before, " -> ", kills)
 				var t2 = _assist_nearest(aim, 1e9)
@@ -2455,8 +2523,11 @@ func _autotest(dt: float) -> void:
 		at_step = 137
 	elif at_step == 137 and at_t > 16.2:
 		_snap("16_nade_hit")
-		print("after enemy nade health=", health)
-		health = 0
+		print("after enemy nade health=", health, " round=", stage, " goal=", round_goal, " ammo=", ammo, "/", reserve)
+		weapon = "pistol"
+		ammo = 0
+		reserve = 0
+		grenades = 0
 		at_step = 13
 	elif at_step == 13 and at_t > 18.6:
 		_snap("09_game_over")
