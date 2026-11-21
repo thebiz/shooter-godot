@@ -1531,7 +1531,7 @@ func _shoot(p: Vector2) -> void:
 				_float_text(gp + Vector3(0, 0.3, 0), "NICE SHOT  +200", true)
 				return
 	if w == "rocket":
-		var tp = _aim_point(p)
+		var tp = _car_magnet(p, _aim_point(p))
 		var from: Vector3 = cam.global_transform * Vector3(0.35, -0.3, -0.6)
 		_launch(from, tp, maxf(0.12, from.distance_to(tp) / 38.0), 0.0, "rocket")
 		return
@@ -1583,12 +1583,27 @@ func _aim_point(p: Vector2) -> Vector3:
 	return o + d * 14.0
 
 
+# Granate/Rakete in der Nähe des Autos: geht aufs Auto (sonst fliegt sie oft übers Dach an die Hauswand)
+func _car_magnet(p: Vector2, tp: Vector3) -> Vector3:
+	if car_dead or car_card.is_empty():
+		return tp
+	var cc: Vector3 = car_card.pv.global_position + Vector3(0, 0.6, 0.15)
+	if cam.is_position_behind(cc):
+		return tp
+	var sp = cam.unproject_position(cc)
+	var near_screen = sp.distance_to(p) < 150.0
+	var near_world = Vector2(tp.x - cc.x, tp.z - cc.z).length() < 3.5
+	if near_screen or near_world:
+		return cc
+	return tp
+
+
 func _throw_grenade() -> void:
 	if grenades <= 0 or state != "play":
 		_sfx("empty", -4.0, 0.0)
 		return
 	grenades -= 1
-	var tp = _aim_point(aim)
+	var tp = _car_magnet(aim, _aim_point(aim))
 	var from: Vector3 = cam.global_transform * Vector3(0.3, -0.35, -0.4)
 	var dist = from.distance_to(tp)
 	_launch(from, tp, 0.55 + dist * 0.03, 1.5 + dist * 0.12, "nade")
@@ -2390,7 +2405,7 @@ func _autotest(dt: float) -> void:
 	elif at_step == 131 and at_t > 10.65:
 		_snap("11_box_open")
 		grenades = max(grenades, 1)
-		aim = cam.unproject_position(car_card.pv.global_position + Vector3(0, 0.6, 0))
+		aim = cam.unproject_position(car_card.pv.global_position + Vector3(0.25, 1.75, -0.35))
 		_throw_grenade()
 		at_step = 132
 	elif at_step == 132 and at_t > 11.45:
