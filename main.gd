@@ -150,6 +150,8 @@ static var upd_done = false
 var autotest = false
 var at_t = 0.0
 var at_step = 0
+var warmed2 = false
+var warming = false
 var mesh_cache = {}         # Partikel-Flächen nach Material und Größe, einmal angelegt
 var fb_mesh: QuadMesh
 var sfx_pool = []           # feste Ton-Abspieler statt für jeden Ton einen neuen
@@ -584,7 +586,7 @@ func _sfx(n: String, vol: float = 0.0, pitch_var: float = 0.08) -> void:
 		p = sfx_pool[sfx_next]
 		sfx_next = (sfx_next + 1) % sfx_pool.size()
 	p.stream = sounds[n]
-	p.volume_db = vol
+	p.volume_db = -80.0 if warming else vol
 	p.pitch_scale = 1.0 + randf_range(-pitch_var, pitch_var)
 	p.play()
 	if vol > -60.0 and not n.begins_with("target"):
@@ -1049,6 +1051,33 @@ func _warmup() -> void:
 		_sfx(snd, -80.0, 0.0)
 
 
+# Alle Einschlag-Arten einmal komplett (Funken, Staub, Splitter, Einschussloch, Punkte-Text),
+# mit einem, zwei und drei Lichtblitzen gleichzeitig – unter der Straße und stumm
+func _warmup_impacts() -> void:
+	warming = true
+	var p = Vector3(0.0, -3.2, -7.0)
+	var fake = _card(ENEMY_TEX[0] + ".png", 1.0, p, "card")
+	var kinds = ["room", "brick", "metal", "wood", "leaf", "card", "ground", "box", "sky"]
+	for i in kinds.size():
+		for l in (i % 3) + 1:
+			_flash_light(p + Vector3(0.3 * l, 0.5, 0.4), 3.5, Color(1, 0.7, 0.4), 2.0, 0.3)
+		var c = {"kind": kinds[i], "mi": fake.mi, "w": fake.w, "h": fake.h}
+		var lp = Vector3(randf_range(-0.2, 0.2), 0.9, 0.0)
+		for dist in [1.5, 7.0, 14.0]:
+			fx_k = clampf(dist / 7.0, 0.22, 1.3)
+			_impact({"card": c, "point": p + Vector3(0, 0.9, 0), "normal": Vector3(0, 0, 1), "local": lp, "uv": Vector2(0.5, 0.5)}, true)
+	_sparks(p, Vector3.UP, 26)
+	_sparks(p, Vector3.UP, 14)
+	for i in 6:
+		_float_text(p, "+%d" % (100 + i), i % 2 == 0)
+	for e in label_pool:
+		e.l.modulate = Color(1, 1, 1, 0.0)   # Texte liegen immer im Vordergrund: beim Vorwärmen unsichtbar
+	_sfx("pickup")
+	_sfx("impact_card")
+	warming = false
+	get_tree().create_timer(0.8).timeout.connect(fake.pv.queue_free)
+
+
 func _set_state(s: String) -> void:
 	state = s
 	st_t = 0.0
@@ -1253,6 +1282,9 @@ func _process(dt: float) -> void:
 			if not warmed and st_t > 0.15:
 				warmed = true
 				_warmup()
+			if not warmed2 and st_t > 0.5:
+				warmed2 = true
+				_warmup_impacts()
 		"intro":
 			if st_t > 1.6:
 				_set_state("play")
@@ -2618,7 +2650,7 @@ func _force_enemy(slot_name: String) -> Dictionary:
 func _autotest(dt: float) -> void:
 	at_t += dt
 	var plan = OS.get_environment("AUTOTEST")
-	if at_step == 0 and at_t > 0.35 and not early_snap:
+	if at_step == 0 and at_t > 0.6 and not early_snap:
 		early_snap = true
 		_snap("00_warmup")
 	if at_step == 0 and at_t > 1.0:
