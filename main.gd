@@ -76,7 +76,8 @@ var mode = "easy"            # easy / hard (Kampagne) oder endless
 const MODES = ["easy", "hard", "endless"]
 const MODE_NAMES = {"easy": "EASY", "hard": "HARD", "endless": "ENDLESS"}
 const ROUNDS_PER_MAP = 4
-const CAMPAIGN_ROUNDS = 8    # zwei Maps à vier Runden (mit der dritten Map: 12)
+const CAMPAIGN_ROUNDS = 12   # drei Maps à vier Runden: Straße, Hafen, Motel
+const MAPS = ["street", "harbor", "motel"]
 var hs = {"easy": [], "hard": [], "endless": []}   # Top 5 je Modus: {n, s, r}
 var hs_new = -1              # Platz des gerade eingetragenen Spielers
 var last_name = ""
@@ -156,6 +157,7 @@ var shred_shader: Shader
 var mflash = 0.0            # Mündungsfeuer im HUD
 var kick_side = 0.0
 const HARBOR_FROM = 5
+const M_TEX = ["m_motel.png", "m_cop.png", "m_cop2.png", "m_pickup.png", "m_trash.png", "m_sign.png", "m_cover.png", "m_sky.jpg", "m_ground.jpg", "m_deb_tire.png", "m_deb_mirror.png", "m_deb_light.png"]
 const H_TEX = ["h_stack.png", "h_stack_back.png", "h_prop.png", "h_crane.png", "h_load.png", "h_truck.png", "h_mast.png", "h_forklift.png", "h_pallets.png", "h_cover.png", "h_sky.jpg", "h_ground.jpg", "h_deb_tire.png", "h_deb_tank.png", "h_deb_lamp.png",
 	"door_leaf.png", "curtain.png", "neighbor0.png", "neighbor1.png", "paper.png", "birds.png"]
 const H_W = 12.2            # Containerstapel
@@ -552,6 +554,7 @@ func _make_world() -> void:
 	scenes["street"] = {"deco": street_deco, "cards": cards, "slots": slots, "wall": wall, "car": car_card, "sky": street_sky,
 		"bg": Color(0.86, 0.6, 0.38), "amb": "ambience"}
 	_make_harbor()
+	_make_motel()
 
 	# Staubkörnchen im Abendlicht
 	motes = CPUParticles3D.new()
@@ -583,6 +586,7 @@ func _make_world() -> void:
 	mh.add_point(0.7, Color(1.0, 0.8, 0.55, 0.35))
 	mh.set_color(mh.get_point_count() - 1, Color(0.8, 0.88, 1.0, 0.0))
 	scenes.harbor.motes = mh
+	scenes.motel.motes = mg
 	motes.scale_amount_min = 0.5
 	motes.scale_amount_max = 1.3
 	add_child(motes)
@@ -698,7 +702,7 @@ func _use_scene(n: String) -> void:
 
 
 func _make_sounds() -> void:
-	for n in ["music", "boom", "car_boom", "shotgun", "smg", "rocket", "pickup", "mega_appear", "warn", "throw", "shot_player", "shot_enemy", "impact_brick", "impact_metal", "impact_card", "target_up", "target_down", "reload", "empty", "player_hit", "ambience", "ambience_harbor"]:
+	for n in ["music", "boom", "car_boom", "shotgun", "smg", "rocket", "pickup", "mega_appear", "warn", "throw", "shot_player", "shot_enemy", "impact_brick", "impact_metal", "impact_card", "target_up", "target_down", "reload", "empty", "player_hit", "ambience", "ambience_harbor", "ambience_motel", "siren", "radio0", "radio1"]:
 		for ext in [".ogg", ".wav"]:
 			var p = "res://sfx/" + n + ext
 			if ResourceLoader.exists(p):
@@ -1124,7 +1128,7 @@ func _hud_draw(c: Control) -> void:
 		_text(c, Vector2(0, vs.y * 0.4), "SHOOTER", 96, Color(1, 0.95, 0.86, a), HORIZONTAL_ALIGNMENT_CENTER, vs.x)
 		_text(c, Vector2(0, vs.y * 0.4 + 40), "GOLDEN HOUR SHOOTOUT", 20, Color(1, 0.86, 0.6, 0.9 * a), HORIZONTAL_ALIGNMENT_CENTER, vs.x, font_light)
 		# drei Modi zur Wahl, darunter jeweils der beste Eintrag
-		var subs = {"easy": "2 maps · 8 rounds", "hard": "2 maps · real challenge", "endless": "how far can you get?"}
+		var subs = {"easy": "3 maps · 12 rounds", "hard": "3 maps · real challenge", "endless": "how far can you get?"}
 		for i in MODES.size():
 			var m = MODES[i]
 			var r = _mode_btn_rect(i)
@@ -1268,7 +1272,7 @@ func _upd_draw(c: Control, a: float) -> void:
 func _warmup() -> void:
 	for n in ENEMY_TEX:
 		_tex(n + ".png")
-	for n in ["box.png", "box_mega.png", "car_bumper.png", "car_tire.png", "car_mirror.png"] + H_TEX:
+	for n in ["box.png", "box_mega.png", "car_bumper.png", "car_tire.png", "car_mirror.png"] + H_TEX + M_TEX:
 		_tex(n)
 	# unter der Straße: der Boden deckt alles ab, auch solange die Fassade noch flach liegt
 	var p = Vector3(0.0, -3.2, -7.0)
@@ -1319,7 +1323,7 @@ func _warmup() -> void:
 	var all_cards = []
 	for n in ENEMY_TEX:
 		all_cards.append(n + ".png")
-	all_cards += ["box.png", "box_mega.png", "car_bumper.png", "car_tire.png", "car_mirror.png"] + H_TEX
+	all_cards += ["box.png", "box_mega.png", "car_bumper.png", "car_tire.png", "car_mirror.png"] + H_TEX + M_TEX
 	for i in all_cards.size():
 		var c = _card(all_cards[i], 0.6, p + Vector3(-2.0 + i * 0.5, -0.5, 0), "card")
 		get_tree().create_timer(0.6).timeout.connect(c.pv.queue_free)
@@ -1457,6 +1461,7 @@ func _start_game() -> void:
 	hits = 0
 	tip_t = 7.0
 	_set_state("intro")
+	_megaphone(0, 1.4)
 	_show_msg("ROUND 1", "%s  ·  %d enemies  ·  %d bullets" % [MODE_NAMES[mode], round_goal, ammo + reserve], 2.4)
 
 
@@ -1505,11 +1510,13 @@ func _round_clear() -> void:
 	break_reload = false
 	cover_time = 0.0
 	spawn_t = 0.6
+	# Durchsage per Megafon: letzte Runde der Kampagne = "we're coming in"
+	_megaphone(5 if (mode != "endless" and stage == CAMPAIGN_ROUNDS) else randi_range(1, 4), 1.0)
 	# alle vier Runden die nächste Map: Kulisse klappt zu, die neue klappt auf
 	var target = _scene_for(stage)
 	if target != scene:
 		swap_to = target
-		_show_msg("ROUND %d" % stage, "%s  ·  %d enemies  ·  %d bullets" % ["the docks" if target == "harbor" else "back on the street", goal, pool], 4.2)
+		_show_msg("ROUND %d" % stage, "%s  ·  %d enemies  ·  %d bullets" % [{"harbor": "the docks", "motel": "the motel  ·  final showdown", "street": "back on the street"}[target], goal, pool], 4.2)
 		break_t = 5.4
 		swap_t = 1.25
 		_close_book()
@@ -1851,7 +1858,7 @@ func _lv_for(st: int) -> int:
 
 
 func _scene_for(st: int) -> String:
-	return "street" if ((st - 1) / ROUNDS_PER_MAP) % 2 == 0 else "harbor"
+	return MAPS[((st - 1) / ROUNDS_PER_MAP) % MAPS.size()]
 
 
 func _dk(easy: float, hard: float) -> float:
@@ -3443,24 +3450,56 @@ func _autotest(dt: float) -> void:
 		at_step = 164
 	elif at_step == 164 and at_t > 37.0:
 		print("RELOAD done ammo=", ammo, "/", reserve)
+		# dritte Map: Motel
+		for e in enemies:
+			if e.state != "fall":
+				e.state = "hide"
+				e.t = 0.0
+		health = 100
+		stage = 2 * ROUNDS_PER_MAP
+		round_kills = round_goal
+		_round_clear()
+		at_step = 170
+	elif at_step == 170 and at_t > 39.4:
+		_snap("30_motel_unfold")
+		at_step = 171
+	elif at_step == 171 and at_t > 43.0:
+		print("MOTEL scene=", scene, " stage=", stage, " slots=", slots.size(), " goal=", round_goal)
+		spawn_t = 999.0
+		cover = false
+		for n in ["up1", "up2", "door", "win", "crates"]:
+			var e = _force_enemy(n)
+			e.aim = 99.0
+		at_step = 172
+	elif at_step == 172 and at_t > 44.2:
+		_snap("31_motel")
+		cover = true
+		at_step = 173
+	elif at_step == 173 and at_t > 44.8:
+		_snap("31b_motel_cover")
+		cover = false
+		_car_explode()
+		at_step = 174
+	elif at_step == 174 and at_t > 46.0:
+		_snap("32_pickup_boom")
 		weapon = "pistol"
 		ammo = 0
 		reserve = 0
 		grenades = 0
 		at_step = 13
-	elif at_step == 13 and at_t > 39.6:
+	elif at_step == 13 and at_t > 47.5:
 		_snap("09_game_over")
 		at_step = 14
-	elif at_step == 14 and at_t > 41.0:
+	elif at_step == 14 and at_t > 48.9:
 		_snap("27_name_entry")
 		name_edit.text = "JOHN"
 		_name_done()
 		at_step = 15
-	elif at_step == 15 and at_t > 41.8:
+	elif at_step == 15 and at_t > 49.7:
 		_snap("28_highscores")
 		_press(_vs() * 0.5)
 		at_step = 16
-	elif at_step == 16 and at_t > 43.0:
+	elif at_step == 16 and at_t > 50.9:
 		_snap("29_menu")
 		get_tree().quit()
 
@@ -3663,6 +3702,9 @@ func _life_update(dt: float) -> void:
 	life_t += dt
 	if scene == "harbor":
 		_harbor_update(dt)
+	elif scene == "motel":
+		_glows_update(dt)
+		_motel_update(dt)
 	else:
 		_birds_update(dt)
 		_paper_update(dt)
@@ -3672,6 +3714,11 @@ func _life_update(dt: float) -> void:
 
 func _harbor_update(dt: float) -> void:
 	_atmo_update(dt)
+	_glows_update(dt)
+	_crane_update(dt)
+
+
+func _glows_update(dt: float) -> void:
 	# Lampen: meist ruhig, ab und zu ein kurzes Flackern; Warnlichter blinken langsam
 	for g in glows:
 		var k = 1.0
@@ -3695,6 +3742,9 @@ func _harbor_update(dt: float) -> void:
 			k = 1.0 - g.dip + sin(life_t * 1.7 + g.ph) * 0.06 + sin(life_t * 7.0 + g.ph * 3.0) * 0.02
 		g.k = lerpf(g.k, k, 1.0 - exp(-dt * (30.0 if g.mode == "blink" else 12.0)))
 		g.mi.set_instance_shader_parameter("k", g.k)
+
+
+func _crane_update(dt: float) -> void:
 	# Laufkatze: fährt langsam hin und her, hält an den Enden, der Container pendelt nach
 	if crane_load != null:
 		var cyc = fmod(life_t, 44.0)
@@ -4220,3 +4270,202 @@ func _atmo_update(dt: float) -> void:
 		ship.position.x += 1.4 * dt
 		if ship.position.x > 120.0:
 			ship.position.x = -120.0
+
+
+# ---------------------------------------------------------------------------
+# Dritte Map: Motel an der Landstraße in der Dämmerung, Polizei hat umstellt (Finale der Kampagne)
+
+const MO_W = 18.0
+const MO_X = -0.8
+const MO_HOLES = {"up1": [0.3241, 0.4087, 0.1443, 0.4216], "up2": [0.7621, 0.8399, 0.1488, 0.4216],
+	"door": [0.4081, 0.4769, 0.5727, 0.8929], "win": [0.8095, 0.8754, 0.5750, 0.7621]}
+var cop_red: OmniLight3D
+var cop_blue: OmniLight3D
+var cop_glows = []
+var neon = {}
+var siren_t = 14.0
+var radio_t = 6.0
+var mega_player: AudioStreamPlayer
+var mega_last = -1
+
+
+func _make_motel() -> void:
+	cards = []
+	slots = []
+	var sky = _card("m_sky.jpg", 220.0, Vector3(0.0, -41.0, -75.0), "sky")
+	var gm = ShaderMaterial.new()
+	gm.shader = ground_shader
+	gm.set_shader_parameter("tex", load("res://art/m_ground.jpg"))
+	gm.set_shader_parameter("rep", 3.4)
+	var gq = QuadMesh.new()
+	gq.size = Vector2(60.0, 24.0)
+	gq.center_offset = Vector3(0, 24.0 * 0.5, 0)
+	var gi = MeshInstance3D.new()
+	gi.mesh = gq
+	gi.material_override = gm
+	var gp = Node3D.new()
+	gp.position = Vector3(0, 0, FAC_Z + 15.0)
+	gp.rotation.x = -PI * 0.5
+	add_child(gp)
+	gp.add_child(gi)
+	cards.append({"pv": gp, "mi": gi, "mat": gm, "img": null, "w": 60.0, "h": 24.0, "kind": "ground", "t": 99.0, "delay": 0.0, "up": true, "static": true})
+	# Motel: zwei Etagen, offene Zimmertüren oben, unten Tür und Fenster offen; dahinter dunkle Zimmer
+	var mo = _card("m_motel.png", MO_W, Vector3(MO_X, FAC_Y, FAC_Z), "brick")
+	mo.delay = 0.0
+	cards.append(mo)
+	var mh: float = mo.h
+	var sink = (1.0 - 851.0 / 887.0) * mh
+	mo.pv.position.y -= sink
+	var room = MeshInstance3D.new()
+	var rq = QuadMesh.new()
+	rq.size = Vector2(MO_W, mh)
+	rq.center_offset = Vector3(0, mh * 0.5, 0)
+	room.mesh = rq
+	var rm = StandardMaterial3D.new()
+	rm.albedo_color = Color(0.045, 0.035, 0.03)
+	rm.roughness = 1.0
+	room.material_override = rm
+	room.position = Vector3(0, 0, -0.85)
+	mo.pv.add_child(room)
+	cards.append({"pv": mo.pv, "mi": room, "mat": rm, "img": null, "w": MO_W, "h": mh, "kind": "room", "t": 99.0, "delay": 0.0, "up": true, "static": true})
+	var cop = _card("m_cop.png", 5.4, Vector3(-7.7, -0.04, -9.8), "metal")
+	cop.delay = 0.25
+	cards.append(cop)
+	var sign = _card("m_sign.png", 3.0, Vector3(7.6, -0.05, -11.8), "metal")
+	sign.delay = 0.4
+	cards.append(sign)
+	var cop2 = _card("m_cop2.png", 5.4, Vector3(8.0, -0.04, -12.3), "metal")
+	cop2.delay = 0.5
+	cards.append(cop2)
+	var pk = _card("m_pickup.png", 3.8, Vector3(4.5, -0.04, -8.4), "metal")
+	pk.delay = 0.6
+	pk.base = pk.pv.position
+	pk.label = "PICKUP"
+	pk.debris = [["m_deb_tire.png", 0.62, Vector3(-1.2, 0.0, 0.5), Vector3(0.0, 0.3, -0.1)],
+		["m_deb_mirror.png", 0.3, Vector3(-2.1, 0.0, 0.6), Vector3(-PI * 0.4, 0.6, 0.0)],
+		["m_deb_light.png", 0.25, Vector3(-2.8, 0.0, 0.4), Vector3(-PI * 0.45, 0.9, 0.0)]]
+	cards.append(pk)
+	var tr = _card("m_trash.png", 4.6, Vector3(-4.3, -0.04, -7.0), "metal")
+	tr.delay = 0.8
+	cards.append(tr)
+	# deine Deckung: die offene Fahrertür des Streifenwagens
+	var cov = _card("m_cover.png", 5.6, Vector3(1.05, -1.04, -1.35), "metal")
+	cov.delay = 1.05
+	cards.append(cov)
+	# Spots: oben in den offenen Zimmertüren und unten in Tür und Fenster ganze bzw. halbe Figur
+	for n in MO_HOLES:
+		var hh = MO_HOLES[n]
+		var x = MO_X + ((hh[0] + hh[1]) * 0.5 - 0.5) * MO_W
+		var ybot = FAC_Y - sink + (1.0 - hh[3]) * mh
+		var oh = (hh[3] - hh[2]) * mh
+		if n == "win":
+			var drop = 3.0 - (oh - 0.1)
+			slots.append({"pos": Vector3(x, ybot - drop, FAC_Z - 0.32), "mode": "flip", "busy": false, "name": n, "eh": 3.0, "box_lift": drop, "partner": "car"})
+		else:
+			slots.append({"pos": Vector3(x, ybot - 0.02, FAC_Z - 0.3), "mode": "flip", "busy": false, "name": n, "eh": oh - 0.06, "box_lift": 0.0})
+	slots.append({"pos": Vector3(-3.1, 0.2, -7.4), "mode": "flip", "busy": false, "name": "crates", "eh": ENEMY_H_FRONT})
+	slots.append({"pos": Vector3(4.0, 0.05, -8.75), "mode": "flip", "busy": false, "name": "car", "box_lift": 1.1, "partner": "win", "eh": ENEMY_H_FRONT})
+	var deco = _make_motel_life(mo, mh, sink, sign)
+	scenes["motel"] = {"deco": deco, "cards": cards, "slots": slots, "wall": cov, "car": pk, "sky": sky.pv,
+		"bg": Color(0.3, 0.18, 0.2), "amb": "ambience_motel"}
+
+
+func _make_motel_life(mo: Dictionary, mh: float, sink: float, sign: Dictionary) -> Node3D:
+	var deco = Node3D.new()
+	add_child(deco)
+	var gl = _soft_tex(64, 1.4)
+	# Blaulicht: zwei farbige Lichter am Streifenwagen links, die abwechselnd über Fassade und Tür zucken
+	cop_red = OmniLight3D.new()
+	cop_red.light_color = Color(1.0, 0.12, 0.08)
+	cop_red.omni_range = 15.0
+	cop_red.light_energy = 0.0
+	cop_red.position = Vector3(-8.3, 2.3, -8.6)
+	deco.add_child(cop_red)
+	cop_blue = OmniLight3D.new()
+	cop_blue.light_color = Color(0.15, 0.35, 1.0)
+	cop_blue.omni_range = 15.0
+	cop_blue.light_energy = 0.0
+	cop_blue.position = Vector3(-7.7, 2.3, -8.6)
+	deco.add_child(cop_blue)
+	# Lichtbalken auf den Dächern (Glühpunkte)
+	var bar_h = 5.4 * 674.0 / 1954.0 * (1.0 - 0.075)
+	for sp in [[-7.7 + (0.405 - 0.5) * 5.4, "r"], [-7.7 + (0.46 - 0.5) * 5.4, "b"], [8.0 + (0.5 - 0.405) * 5.4, "r"], [8.0 + (0.5 - 0.46) * 5.4, "b"]]:
+		var z = -9.7 if sp[0] < 0 else -12.2
+		var mi = _glow_node(deco, gl, Vector3(sp[0], bar_h, z), 1.4, Color(1.0, 0.15, 0.1) if sp[1] == "r" else Color(0.2, 0.4, 1.0))
+		cop_glows.append({"mi": mi, "c": sp[1], "ph": 0.0 if sp[0] < 0 else 0.37})
+	# Neonschild: MOTEL-Schriftzug flackert ab und zu, der Stern leuchtet ruhig
+	var sw = 3.0
+	var shh: float = sign.h
+	var sx = 7.6
+	neon.letters = _glow_node(deco, gl, Vector3(sx + 0.03 * sw, -0.05 + (1.0 - 0.265) * shh, -11.7), 3.4, Color(1.0, 0.3, 0.14))
+	neon.letters.scale = Vector3(1.0, 0.42, 1.0)
+	neon.star = _glow_node(deco, gl, Vector3(sx + 0.02 * sw, -0.05 + (1.0 - 0.1) * shh, -11.7), 1.6, Color(1.0, 0.75, 0.4))
+	neon.t = 3.0
+	neon.dip = 0.0
+	# Wandlampen am Motel (sanft, eine wackelt)
+	for uv in [Vector2(0.2825, 0.1625), Vector2(0.679, 0.175), Vector2(0.08, 0.6125), Vector2(0.381, 0.6125), Vector2(0.759, 0.595)]:
+		_glow(deco, gl, Vector3(MO_X + (uv.x - 0.5) * MO_W, FAC_Y - sink + (1.0 - uv.y) * mh, FAC_Z + 0.2), 1.1, Color(1.0, 0.72, 0.38), "flick")
+	_glow(deco, gl, Vector3(MO_X + (0.7375 - 0.5) * MO_W, FAC_Y - sink + (1.0 - 0.5175) * mh, FAC_Z + 0.2), 1.8, Color(0.9, 0.95, 1.0), "flick")
+	mega_player = AudioStreamPlayer.new()
+	mega_player.volume_db = -1.0
+	add_child(mega_player)
+	return deco
+
+
+func _glow_node(parent: Node3D, tex: Texture2D, pos: Vector3, size: float, col: Color) -> MeshInstance3D:
+	_glow(parent, tex, pos, size, col, "steady")
+	var g = glows.pop_back()   # selbst gesteuert, nicht über die Lampenliste
+	return g.mi
+
+
+func _motel_update(dt: float) -> void:
+	# Polizei-Strobe: rot zweimal, dann blau zweimal
+	var cyc = fmod(life_t, 0.9)
+	var r = 1.0 if (cyc < 0.07 or (cyc > 0.15 and cyc < 0.22)) else 0.0
+	var b = 1.0 if ((cyc > 0.45 and cyc < 0.52) or (cyc > 0.6 and cyc < 0.67)) else 0.0
+	cop_red.light_energy = lerpf(cop_red.light_energy, r * 3.2, 1.0 - exp(-dt * 40.0))
+	cop_blue.light_energy = lerpf(cop_blue.light_energy, b * 3.6, 1.0 - exp(-dt * 40.0))
+	for g in cop_glows:
+		var cc = fmod(life_t + g.ph, 0.9)
+		var on: bool
+		if g.c == "r":
+			on = cc < 0.07 or (cc > 0.15 and cc < 0.22)
+		else:
+			on = (cc > 0.45 and cc < 0.52) or (cc > 0.6 and cc < 0.67)
+		g.mi.set_instance_shader_parameter("k", 1.0 if on else 0.15)
+	# Neon: meistens an, ab und zu ein kaputtes Flackern
+	neon.t -= dt
+	if neon.t <= 0.0:
+		if neon.dip > 0.0:
+			neon.dip = 0.0
+			neon.t = randf_range(2.0, 7.0) if randf() < 0.7 else randf_range(0.05, 0.12)
+		else:
+			neon.dip = randf_range(0.5, 0.9)
+			neon.t = randf_range(0.04, 0.14)
+	neon.letters.set_instance_shader_parameter("k", 1.0 - neon.dip + sin(life_t * 50.0) * 0.04)
+	neon.star.set_instance_shader_parameter("k", 0.85 + sin(life_t * 2.0) * 0.1)
+	# Sirene und Funk ab und zu
+	if state == "play" or state == "intro":
+		siren_t -= dt
+		if siren_t <= 0.0:
+			siren_t = randf_range(22.0, 38.0)
+			_sfx("siren", -9.0, 0.05)
+		radio_t -= dt
+		if radio_t <= 0.0:
+			radio_t = randf_range(9.0, 17.0)
+			_sfx("radio%d" % (randi() % 2), -6.0, 0.04)
+
+
+# Megafon-Durchsage der Polizei (in allen Maps, zu Rundenbeginn)
+func _megaphone(i: int, delay: float) -> void:
+	if mega_player == null:
+		return
+	if i >= 1 and i <= 4 and i == mega_last:
+		i = (i % 4) + 1
+	mega_last = i
+	var st = load("res://sfx/voice/cop%d.ogg" % i)
+	get_tree().create_timer(delay).timeout.connect(func():
+		if warming:
+			return
+		mega_player.stream = st
+		mega_player.play())
