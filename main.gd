@@ -2411,12 +2411,17 @@ func _aim_point(p: Vector2) -> Vector3:
 func _car_magnet(p: Vector2, tp: Vector3) -> Vector3:
 	if car_dead or car_card.is_empty():
 		return tp
-	var cc: Vector3 = car_card.pv.global_position + Vector3(0, 0.6, 0.15)
+	var cc: Vector3 = car_card.pv.global_position + Vector3(0, minf(0.6, car_card.h * 0.3), 0.15)
 	if cam.is_position_behind(cc):
 		return tp
+	# Trefferzone wächst mit der Fahrzeugbreite (großer Pickup im Motel)
+	var half = car_card.w * 0.5
+	var sl = cam.unproject_position(cc - Vector3(half, 0, 0))
+	var sr = cam.unproject_position(cc + Vector3(half, 0, 0))
 	var sp = cam.unproject_position(cc)
-	var near_screen = sp.distance_to(p) < 150.0
-	var near_world = Vector2(tp.x - cc.x, tp.z - cc.z).length() < 3.5
+	var reach = maxf(150.0, sl.distance_to(sr) * 0.5 + 40.0)
+	var near_screen = absf(p.x - sp.x) < reach and absf(p.y - sp.y) < 170.0
+	var near_world = Vector2(tp.x - cc.x, tp.z - cc.z).length() < maxf(3.5, half + 1.0)
 	if near_screen or near_world:
 		return cc
 	return tp
@@ -2523,7 +2528,8 @@ func _explode(pos: Vector3, radius: float, hurts_player: bool, snd: String = "bo
 			_kill_enemy(e, ep, false)
 	if not car_dead and not car_card.is_empty():
 		var cp: Vector3 = car_card.pv.global_position + Vector3(0, 0.7, 0)
-		if cp.distance_to(pos) < radius + 0.9:
+		var dx = maxf(0.0, absf(pos.x - cp.x) - car_card.w * 0.35)
+		if Vector3(dx, pos.y - cp.y, pos.z - cp.z).length() < radius + 0.9:
 			get_tree().create_timer(0.15).timeout.connect(_car_explode)
 
 
@@ -3467,9 +3473,13 @@ func _autotest(dt: float) -> void:
 		print("MOTEL scene=", scene, " stage=", stage, " slots=", slots.size(), " goal=", round_goal)
 		spawn_t = 999.0
 		cover = false
-		for n in ["up1", "up2", "door", "win", "crates", "car"]:
+		for n in ["up1", "up2", "door", "win", "crates"]:
 			var e = _force_enemy(n)
 			e.aim = 99.0
+		for sl in slots:
+			if sl.name == "car":
+				sl.busy = true
+				_spawn_box(sl, false)
 		at_step = 172
 	elif at_step == 172 and at_t > 44.2:
 		_snap("31_motel")
@@ -3478,9 +3488,13 @@ func _autotest(dt: float) -> void:
 	elif at_step == 173 and at_t > 44.8:
 		_snap("31b_motel_cover")
 		cover = false
-		_car_explode()
+		grenades = 1
+		# Granate auf die hintere Hälfte des Pickups werfen, nicht genau auf die Mitte
+		aim = cam.unproject_position(car_card.pv.global_position + Vector3(car_card.w * 0.32, 0.9, 0))
+		_throw_grenade()
 		at_step = 174
-	elif at_step == 174 and at_t > 46.0:
+	elif at_step == 174 and at_t > 46.3:
+		print("PICKUP dead=", car_dead)
 		_snap("32_pickup_boom")
 		weapon = "pistol"
 		ammo = 0
@@ -4366,7 +4380,7 @@ func _make_motel() -> void:
 			slots.append({"pos": Vector3(x, ybot - 0.02, FAC_Z - 0.3), "mode": "flip", "busy": false, "name": n, "eh": oh - 0.06, "box_lift": 0.0})
 	slots.append({"pos": Vector3(-3.1, 0.2, -7.4), "mode": "flip", "busy": false, "name": "crates", "eh": ENEMY_H_FRONT})
 	# vorne seitlich an der Motorhaube des Pickups, gut sichtbar
-	slots.append({"pos": Vector3(2.05, 0.0, -8.7), "mode": "flip", "busy": false, "name": "car", "box_lift": 1.25, "eh": ENEMY_H_FRONT})
+	slots.append({"pos": Vector3(2.05, 0.0, -8.7), "mode": "flip", "busy": false, "name": "car", "box_lift": 0.0, "eh": ENEMY_H_FRONT})
 	var deco = _make_motel_life(mo, mh, sink, sign)
 	scenes["motel"] = {"deco": deco, "cards": cards, "slots": slots, "wall": cov, "car": pk, "sky": sky.pv,
 		"bg": Color(0.3, 0.18, 0.2), "amb": "ambience_motel"}
