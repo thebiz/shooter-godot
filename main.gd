@@ -231,7 +231,7 @@ func _make_shaders() -> void:
 	card_shader = Shader.new()
 	card_shader.code = """
 shader_type spatial;
-render_mode depth_prepass_alpha, cull_disabled, diffuse_lambert, specular_disabled;
+render_mode cull_disabled, diffuse_lambert, specular_disabled, alpha_to_coverage;
 uniform sampler2D tex : source_color, filter_linear_mipmap_anisotropic, repeat_disable;
 uniform vec3 back_col : source_color = vec3(0.56, 0.44, 0.32);
 uniform float flash = 0.0;
@@ -278,6 +278,11 @@ void fragment() {
 	col = mix(col, vec3(0.7, 0.58, 0.42), torn * 0.9);
 	ALBEDO = col * dim;
 	ALPHA = alpha;
+	// Ausgeschnittene Pappe statt Transparenz: wird im deckenden Durchgang gemalt und schreibt Tiefe,
+	// dadurch kann die Zeichenreihenfolge (Himmel, Innenraum, Gegner) nie mehr durcheinandergeraten
+	ALPHA_SCISSOR_THRESHOLD = 0.5;
+	ALPHA_ANTIALIASING_EDGE = 0.35;
+	ALPHA_TEXTURE_COORDINATE = UV * vec2(textureSize(tex, 0));
 	ROUGHNESS = 1.0;
 	EMISSION = col * flash;
 }
@@ -602,7 +607,6 @@ func _make_harbor() -> void:
 	var bk = _card("h_stack_back.png", H_W * f, Vector3.ZERO, "room")
 	_adopt(ct.pv, bk.pv, Vector3(H_X * f - H_X, CAM_UP.y + (FAC_Y - CAM_UP.y) * f - FAC_Y, -1.0))
 	bk.static = true
-	bk.mat.render_priority = -10   # Innenräume immer zuerst malen, damit sie keinen Gegner verdecken
 	cards.append(bk)
 	var prop = _card("h_prop.png", 2.7, Vector3(-0.5, -0.04, -10.0), "metal")
 	prop.delay = 0.3
@@ -3777,31 +3781,35 @@ func _shred(c: Dictionary, point: Vector3, power: String) -> void:
 	var new_holes = []
 	var frags = []   # [u, v, Größe in m]
 	var k = c.h / 1.8          # Fetzen wachsen mit der Größe des Aufstellers
+	# Jeder Treffer reißt ein großes Stück raus (mindestens etwa ein Fünftel der Figur), die Fetzen sind genau
+	# die Pappe, die dort fehlt: pro Loch mehrere Stücke aus genau dieser Stelle des Bildes
+	var big = []     # [u, v, r]
+	var hx = 0.5 / asp   # Bildbreite in Höhen-Einheiten umrechnen
 	match power:
 		"shotgun":
-			for i in 9:
-				new_holes.append(Vector4(u + randf_range(-0.24, 0.24) / asp * 0.5, v + randf_range(-0.13, 0.13), randf_range(0.03, 0.06), randf() * 9.0))
-			for i in 3:
-				new_holes.append(Vector4(u + randf_range(-0.16, 0.16) / asp * 0.5, v + randf_range(-0.09, 0.09), randf_range(0.08, 0.12), randf() * 9.0))
-			for i in 12:
-				frags.append([u + randf_range(-0.22, 0.22), v + randf_range(-0.14, 0.14), randf_range(0.15, 0.36) * k])
+			big.append([u, v, randf_range(0.13, 0.16)])
+			for i in 4:
+				big.append([u + randf_range(-0.28, 0.28) * hx * 0.5, v + randf_range(-0.18, 0.18), randf_range(0.08, 0.12)])
+			for i in 8:
+				new_holes.append(Vector4(u + randf_range(-0.3, 0.3) * hx * 0.5, v + randf_range(-0.22, 0.22), randf_range(0.03, 0.05), randf() * 9.0))
 		"boom", "rocket":
-			for i in 12:
-				new_holes.append(Vector4(randf_range(0.15, 0.85), randf_range(0.08, 0.95), randf_range(0.07, 0.14), randf() * 9.0))
-			for i in 18:
-				frags.append([randf_range(0.15, 0.85), randf_range(0.05, 0.95), randf_range(0.2, 0.45) * k])
+			for i in 9:
+				big.append([randf_range(0.2, 0.8), randf_range(0.1, 0.92), randf_range(0.1, 0.16)])
 		"smg":
-			new_holes.append(Vector4(u, v, randf_range(0.035, 0.045), randf() * 9.0))
-			new_holes.append(Vector4(u + randf_range(-0.05, 0.05), v + randf_range(-0.05, 0.05), randf_range(0.02, 0.03), randf() * 9.0))
-			for i in 3:
-				frags.append([u + randf_range(-0.05, 0.05), v + randf_range(-0.04, 0.04), randf_range(0.12, 0.22) * k])
+			big.append([u, v, randf_range(0.075, 0.095)])
 		_:
-			# Pistole: ein großes ausgefranstes Loch, daneben platzt noch ein Stück ab
-			new_holes.append(Vector4(u, v, randf_range(0.045, 0.06), randf() * 9.0))
-			for i in 2:
-				new_holes.append(Vector4(u + randf_range(-0.07, 0.07) / asp * 0.5, v + randf_range(-0.06, 0.06), randf_range(0.022, 0.035), randf() * 9.0))
-			for i in 5:
-				frags.append([u + randf_range(-0.07, 0.07), v + randf_range(-0.06, 0.06), randf_range(0.14, 0.27) * k])
+			big.append([u, v, randf_range(0.11, 0.13)])
+			big.append([u + randf_range(-0.12, 0.12) * hx * 0.5, v + randf_range(-0.1, 0.1), randf_range(0.06, 0.08)])
+	for b in big:
+		new_holes.append(Vector4(b[0], b[1], b[2], randf() * 9.0))
+		# das ausgerissene Stück zerfällt in 3–4 Fetzen aus genau diesem Bereich
+		var n = 4 if b[2] > 0.1 else 3
+		for i in n:
+			var a = TAU * (i + randf() * 0.6) / n
+			var rr = b[2] * randf_range(0.2, 0.6)
+			frags.append([b[0] + cos(a) * rr * hx * 2.0 * 0.5, b[1] + sin(a) * rr, b[2] * c.h * randf_range(1.0, 1.35)])
+	for i in (3 if power in ["pistol", "smg"] else 6):
+		frags.append([u + randf_range(-0.08, 0.08), v + randf_range(-0.08, 0.08), randf_range(0.06, 0.12) * k])
 	c.holes.append_array(new_holes)
 	while c.holes.size() > 16:
 		c.holes.pop_front()
@@ -3841,7 +3849,7 @@ func _shred(c: Dictionary, point: Vector3, power: String) -> void:
 	fx_k = clampf(point.distance_to(cam.global_position) / 7.0, 0.22, 1.3)
 	var nrm: Vector3 = -away
 	_chunks(point + nrm * 0.03, nrm, 5 if power in ["pistol", "smg"] else 10, [Color(0.78, 0.07, 0.05), Color(0.55, 0.03, 0.03)], 0.025)
-	while shreds.size() > 70:
+	while shreds.size() > 90:
 		var o = shreds.pop_front()
 		if is_instance_valid(o.mi):
 			o.mi.queue_free()
