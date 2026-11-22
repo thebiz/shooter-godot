@@ -114,6 +114,19 @@ var ui_drag = ""            # "slider0".., "thumb", "fire"
 var holes_live = []
 # Boxen, Waffen, Granaten, Auto
 var car_card = {}
+var scene = "street"        # street (Straße, Abendsonne), harbor (Containerhafen bei Nacht, ab Runde 5)
+var scenes = {}             # pro Szene: Kulissen, Spots, Deckung, Auto, Himmel
+var swap_t = -1.0           # läuft während des Szenenwechsels
+const HARBOR_FROM = 5
+const H_TEX = ["h_containers.png", "h_truck.png", "h_mast.png", "h_forklift.png", "h_pallets.png", "h_cover.png", "h_sky.jpg", "h_ground.jpg", "h_room.jpg", "h_deb_tire.png", "h_deb_tank.png", "h_deb_lamp.png"]
+const H_W = 12.5            # Containerwand
+const H_X = 0.2
+# Luken und Tür der Containerwand (u0, u1, v0, v1 im Bild), gleiche Reihenfolge wie bei der Fassade
+const H_HOLES = [
+	[0.3351, 0.4276, 0.2376, 0.3831], [0.0845, 0.1816, 0.2376, 0.3831],
+	[0.5856, 0.6828, 0.2376, 0.3831], [0.8351, 0.9316, 0.2376, 0.3831],
+	[0.0845, 0.1799, 0.7214, 0.8644], [0.8351, 0.9322, 0.7214, 0.8644],
+	[0.4069, 0.6103, 0.5721, 0.9453]]
 var car_dead = false
 var car_fx = []             # Feuer und Rauch am kaputten Auto
 var car_burn_t = 0.0
@@ -370,6 +383,7 @@ func _make_world() -> void:
 
 	# Himmel ganz hinten
 	var sky = _card("sky.jpg", 270.0, Vector3(25.0, -62.0, -75.0), "sky")
+	var street_sky: Node3D = sky.pv
 	sky.pv.rotation.y = 0.0
 	sky.mat.set_shader_parameter("dim", 1.0)
 	# Boden (Gehweg und Straße) liegt flach
@@ -430,6 +444,10 @@ func _make_world() -> void:
 	cards.append(car)
 	car_card = car
 	car.base = car.pv.position
+	car.label = "CAR"
+	car.debris = [["car_bumper.png", 1.95, Vector3(-1.9, 0.0, 0.35), Vector3(-0.95, 0.45, 0.18)],
+		["car_tire.png", 0.6, Vector3(-0.9, 0.0, 0.5), Vector3(0.0, 0.25, -0.12)],
+		["car_mirror.png", 0.25, Vector3(-2.6, 0.0, 0.6), Vector3(-PI * 0.4, 0.8, 0.0)]]
 	var hedge = _card("hedge.png", 2.9, Vector3(6.6, -0.04, -7.7), "leaf")
 	hedge.delay = 0.7
 	cards.append(hedge)
@@ -448,12 +466,15 @@ func _make_world() -> void:
 		if i == 6:   # Haustür: ganze Figur
 			slots.append({"pos": Vector3(x, ybot, FAC_Z - 0.3), "mode": "flip", "busy": false, "name": "door"})
 		else:
-			slots.append({"pos": Vector3(x, ybot - 0.74, FAC_Z - 0.32), "mode": "flip", "busy": false, "name": "window%d" % i})
+			slots.append({"pos": Vector3(x, ybot - 0.74, FAC_Z - 0.32), "mode": "flip", "busy": false, "name": "window%d" % i, "box_lift": 0.74})
 	slots.append({"pos": Vector3(-2.55, 0.0, -7.4), "mode": "flip", "busy": false, "name": "crates", "partner": "window4"})
 	for sl in slots:
 		if sl.name == "window4":
 			sl.partner = "crates"
-	slots.append({"pos": Vector3(4.25, 0.28, -8.75), "mode": "flip", "busy": false, "name": "car"})
+	slots.append({"pos": Vector3(4.25, 0.28, -8.75), "mode": "flip", "busy": false, "name": "car", "box_lift": 1.02})
+	scenes["street"] = {"cards": cards, "slots": slots, "wall": wall, "car": car_card, "sky": street_sky,
+		"bg": Color(0.86, 0.6, 0.38), "amb": "ambience"}
+	_make_harbor()
 
 	# Staubkörnchen im Abendlicht
 	motes = CPUParticles3D.new()
@@ -478,13 +499,124 @@ func _make_world() -> void:
 	mg.add_point(0.7, Color(1.0, 0.8, 0.5, 0.45))
 	mg.set_color(mg.get_point_count() - 1, Color(1.0, 0.8, 0.5, 0.0))
 	motes.color_ramp = mg
+	scenes.street.motes = mg
+	var mh = Gradient.new()
+	mh.set_color(0, Color(0.75, 0.85, 1.0, 0.0))
+	mh.add_point(0.3, Color(0.8, 0.88, 1.0, 0.4))
+	mh.add_point(0.7, Color(1.0, 0.8, 0.55, 0.35))
+	mh.set_color(mh.get_point_count() - 1, Color(0.8, 0.88, 1.0, 0.0))
+	scenes.harbor.motes = mh
 	motes.scale_amount_min = 0.5
 	motes.scale_amount_max = 1.3
 	add_child(motes)
+	_use_scene("street")
+
+
+# Zweite Szene: Containerhafen bei Nacht. Gleicher Spielbereich wie die Straße, nur anders verkleidet
+func _make_harbor() -> void:
+	cards = []
+	slots = []
+	var sky = _card("h_sky.jpg", 220.0, Vector3(0.0, -28.6, -75.0), "sky")
+	sky.mat.set_shader_parameter("dim", 1.0)
+	var gm = ShaderMaterial.new()
+	gm.shader = ground_shader
+	gm.set_shader_parameter("tex", load("res://art/h_ground.jpg"))
+	gm.set_shader_parameter("rep", 2.6)
+	var gq = QuadMesh.new()
+	gq.size = Vector2(46.0, 15.0)
+	gq.center_offset = Vector3(0, 15.0 * 0.5, 0)
+	var gi = MeshInstance3D.new()
+	gi.mesh = gq
+	gi.material_override = gm
+	var gp = Node3D.new()
+	gp.position = Vector3(0, 0, FAC_Z + 15.0)
+	gp.rotation.x = -PI * 0.5
+	add_child(gp)
+	gp.add_child(gi)
+	cards.append({"pv": gp, "mi": gi, "mat": gm, "img": null, "w": 46.0, "h": 15.0, "kind": "ground", "t": 99.0, "delay": 0.0, "up": true, "static": true})
+	# Containerwand mit offenen Luken, dahinter dunkles Wellblech
+	var ct = _card("h_containers.png", H_W, Vector3(H_X, FAC_Y, FAC_Z), "metal")
+	ct.delay = 0.0
+	cards.append(ct)
+	var ch: float = ct.h
+	var inner = MeshInstance3D.new()
+	var iq = QuadMesh.new()
+	iq.size = Vector2(H_W * 1.06, ch * 1.06)
+	iq.center_offset = Vector3(0, ch * 0.53, 0)
+	inner.mesh = iq
+	var im = StandardMaterial3D.new()
+	im.albedo_texture = load("res://art/h_room.jpg")
+	im.roughness = 1.0
+	inner.material_override = im
+	inner.position = Vector3(0, -0.05, -0.85)
+	ct.pv.add_child(inner)
+	cards.append({"pv": ct.pv, "mi": inner, "mat": im, "img": null, "w": H_W, "h": ch, "kind": "room", "t": 99.0, "delay": 0.0, "up": true, "static": true})
+	var truck = _card("h_truck.png", 5.6, Vector3(-7.9, -0.05, -10.4), "metal")
+	truck.delay = 0.25
+	cards.append(truck)
+	var mast = _card("h_mast.png", 1.9, Vector3(8.4, -0.05, -11.6), "metal")
+	mast.delay = 0.45
+	cards.append(mast)
+	var fork = _card("h_forklift.png", 2.7, Vector3(4.45, -0.04, -8.4), "metal")
+	fork.delay = 0.6
+	fork.base = fork.pv.position
+	fork.label = "FORKLIFT"
+	fork.debris = [["h_deb_tire.png", 0.55, Vector3(-1.1, 0.0, 0.5), Vector3(0.0, 0.3, -0.1)],
+		["h_deb_tank.png", 0.62, Vector3(-2.0, 0.0, 0.4), Vector3(-0.2, 0.5, 0.25)],
+		["h_deb_lamp.png", 0.2, Vector3(-2.7, 0.0, 0.7), Vector3(-0.3, 0.8, 0.0)]]
+	cards.append(fork)
+	var pal = _card("h_pallets.png", 3.8, Vector3(-4.2, -0.04, -7.0), "wood")
+	pal.delay = 0.8
+	cards.append(pal)
+	var cov = _card("h_cover.png", 5.2, Vector3(1.05, -0.31, -1.35), "brick")
+	cov.delay = 1.05
+	cards.append(cov)
+	# Spots: Luken zeigen nur Kopf und Brust (die Luken sind niedriger als die Fenster)
+	for i in H_HOLES.size():
+		var hh = H_HOLES[i]
+		var x = H_X + ((hh[0] + hh[1]) * 0.5 - 0.5) * H_W
+		var ybot = FAC_Y + (1.0 - hh[3]) * ch
+		var ytop = FAC_Y + (1.0 - hh[2]) * ch
+		if i == 6:   # Containertür: ganze Figur auf dem Containerboden
+			slots.append({"pos": Vector3(x, FAC_Y + 0.07 * ch, FAC_Z - 0.3), "mode": "flip", "busy": false, "name": "door"})
+		else:
+			var drop = ENEMY_H - (ytop - ybot) + 0.03
+			slots.append({"pos": Vector3(x, ybot - drop, FAC_Z - 0.32), "mode": "flip", "busy": false, "name": "window%d" % i, "box_lift": drop})
+	slots.append({"pos": Vector3(-2.95, 0.3, -7.4), "mode": "flip", "busy": false, "name": "crates", "partner": "window4"})
+	for sl in slots:
+		if sl.name == "window4":
+			sl.partner = "crates"
+		if sl.name == "window5":
+			sl.partner = "car"
+	# Gabelstapler-Spot liegt aus Spielersicht vor der rechten unteren Luke: nie beide gleichzeitig
+	slots.append({"pos": Vector3(4.0, 0.05, -8.75), "mode": "flip", "busy": false, "name": "car", "box_lift": 1.05, "partner": "window5"})
+	scenes["harbor"] = {"cards": cards, "slots": slots, "wall": cov, "car": fork, "sky": sky.pv,
+		"bg": Color(0.05, 0.07, 0.11), "amb": "ambience_harbor"}
+
+
+# Szene umschalten: andere Kulissen ausblenden, Spots, Deckung und Auto übernehmen
+func _use_scene(n: String) -> void:
+	scene = n
+	for k in scenes:
+		var on = k == n
+		scenes[k].sky.visible = on
+		for c in scenes[k].cards:
+			c.pv.visible = on
+	var sc = scenes[n]
+	cards = sc.cards
+	slots = sc.slots
+	wall = sc.wall
+	car_card = sc.car
+	env.background_color = sc.bg
+	if motes != null and sc.has("motes"):
+		motes.color_ramp = sc.motes
+	if ambience != null and sounds.has(sc.amb) and ambience.stream != sounds[sc.amb]:
+		ambience.stream = sounds[sc.amb]
+		ambience.play()
 
 
 func _make_sounds() -> void:
-	for n in ["music", "boom", "car_boom", "shotgun", "smg", "rocket", "pickup", "mega_appear", "warn", "throw", "shot_player", "shot_enemy", "impact_brick", "impact_metal", "impact_card", "target_up", "target_down", "reload", "empty", "player_hit", "ambience"]:
+	for n in ["music", "boom", "car_boom", "shotgun", "smg", "rocket", "pickup", "mega_appear", "warn", "throw", "shot_player", "shot_enemy", "impact_brick", "impact_metal", "impact_card", "target_up", "target_down", "reload", "empty", "player_hit", "ambience", "ambience_harbor"]:
 		for ext in [".ogg", ".wav"]:
 			var p = "res://sfx/" + n + ext
 			if ResourceLoader.exists(p):
@@ -982,7 +1114,7 @@ func _upd_draw(c: Control, a: float) -> void:
 func _warmup() -> void:
 	for n in ENEMY_TEX:
 		_tex(n + ".png")
-	for n in ["box.png", "box_mega.png", "car_bumper.png", "car_tire.png", "car_mirror.png"]:
+	for n in ["box.png", "box_mega.png", "car_bumper.png", "car_tire.png", "car_mirror.png"] + H_TEX:
 		_tex(n)
 	# unter der Straße: der Boden deckt alles ab, auch solange die Fassade noch flach liegt
 	var p = Vector3(0.0, -3.2, -7.0)
@@ -1033,7 +1165,7 @@ func _warmup() -> void:
 	var all_cards = []
 	for n in ENEMY_TEX:
 		all_cards.append(n + ".png")
-	all_cards += ["box.png", "box_mega.png", "car_bumper.png", "car_tire.png", "car_mirror.png"]
+	all_cards += ["box.png", "box_mega.png", "car_bumper.png", "car_tire.png", "car_mirror.png"] + H_TEX
 	for i in all_cards.size():
 		var c = _card(all_cards[i], 0.6, p + Vector3(-2.0 + i * 0.5, -0.5, 0), "card")
 		get_tree().create_timer(0.6).timeout.connect(c.pv.queue_free)
@@ -1105,6 +1237,15 @@ func _close_book() -> void:
 			continue
 		c.t = -c.delay * 0.4
 		c.up = false
+
+
+func _back_to_street() -> void:
+	swap_t = -1.0
+	if scene != "street":
+		_car_reset()
+		_use_scene("street")
+		for c in cards:
+			c.t = -10.0
 
 
 func _start_game() -> void:
@@ -1184,6 +1325,12 @@ func _round_clear() -> void:
 	break_reload = false
 	cover_time = 0.0
 	spawn_t = 0.6
+	# ab Runde 5 geht es in den Hafen: Straße klappt zu, Hafen klappt auf
+	if stage == HARBOR_FROM and scene == "street":
+		_show_msg("ROUND %d" % stage, "the docks  ·  %d enemies  ·  %d bullets" % [goal, pool], 4.2)
+		break_t = 5.4
+		swap_t = 1.25
+		_close_book()
 
 
 func _game_over() -> void:
@@ -1308,6 +1455,18 @@ func _process(dt: float) -> void:
 func _play_update(dt: float) -> void:
 	if break_t > 0.0:
 		break_t -= dt
+		if swap_t > 0.0:
+			swap_t -= dt
+			if swap_t <= 0.0:
+				_car_reset()
+				for f in fbs:
+					if is_instance_valid(f.n):
+						f.n.queue_free()
+				fbs.clear()
+				_use_scene("harbor")
+				for c in cards:
+					c.t = -10.0
+				_open_book(0.15)
 		if not break_reload and break_t < 1.9:
 			break_reload = true
 			reload_player.stream = sounds.get("reload")
@@ -1415,6 +1574,8 @@ func _spawn() -> void:
 	var tex: Texture2D = _tex(ENEMY_TEX[ti] + ".png")
 	var w = ENEMY_H * tex.get_width() / float(tex.get_height())
 	var c = _card(ENEMY_TEX[ti] + ".png", w, s.pos, "card", ENEMY_H)
+	if scene == "harbor":
+		c.mat.set_shader_parameter("dim", 0.8)
 	c.merge({"slot": s, "state": "appear", "t": 0.0, "aim": _diff_aim() * randf_range(0.85, 1.2), "shots": 1 + (1 if stage >= 2 and randf() < 0.35 else 0), "gun_v": GUN_V[ti], "mode": s.mode, "seen": 0.0, "side": -1.0 if randf() < 0.5 else 1.0, "voice": ["A", "B", "C", "D"][randi() % 4]}, true)
 	_enemy_pose(c, 0.0)
 	enemies.append(c)
@@ -1436,10 +1597,10 @@ func _spawn_box(s: Dictionary, mega: bool) -> void:
 	_evt("box" + (" mega" if mega else ""))
 	var pos: Vector3 = s.pos
 	if s.name.begins_with("window"):
-		pos.y += 0.74
+		pos.y += s.get("box_lift", 0.74)
 		pos.z += 0.1
 	elif s.name == "car":
-		pos.y += 1.02
+		pos.y += s.get("box_lift", 1.02)
 	var c = _card("box_mega.png" if mega else "box.png", 0.85 if mega else 0.8, pos, "box")
 	c.merge({"slot": s, "state": "appear", "t": 0.0, "aim": 99.0, "shots": 0, "gun_v": 0.5, "mode": "flip", "seen": 0.0, "side": 1.0,
 		"box": true, "mega": mega, "life": 2.4 if mega else 3.2}, true)
@@ -1779,6 +1940,7 @@ func _press(p: Vector2, idx: int = 0) -> void:
 			if _upd_btn_rect().has_point(p) and upd_url != "" and upd_build > _my_build():
 				OS.shell_open(upd_url)
 				return
+			_back_to_street()
 			_close_book()
 			_open_book(0.35)
 			_start_game()
@@ -1788,6 +1950,7 @@ func _press(p: Vector2, idx: int = 0) -> void:
 			if _upd_btn_rect().has_point(p) and upd_url != "" and upd_build > _my_build():
 				OS.shell_open(upd_url)
 				return
+			_back_to_street()
 			_close_book()
 			_open_book(0.45)
 			_start_game()
@@ -1867,9 +2030,9 @@ func _shoot(p: Vector2) -> void:
 	_flash_light(cam.global_transform * Vector3(0.35, -0.3, -0.6), 3.5, Color(1.0, 0.72, 0.4), 3.0)
 	var targets = (cards + enemies).filter(func(x): return x != wall)
 	var hit = _pick(p, targets)
-	# Gegner und Bonus-Kisten haben Vorrang vor der Kulisse: steht eine Kiste knapp hinter dem Kistenstapel,
+	# Bonus-Kisten haben Vorrang vor der Kulisse: steht eine Kiste knapp hinter dem Kistenstapel,
 	# soll der Schuss nicht im Holz davor hängen bleiben
-	var live = enemies.filter(func(x): return x.state != "fall" and x.state != "hide" and (x.kind == "card" or x.kind == "box"))
+	var live = enemies.filter(func(x): return x.state != "fall" and x.state != "hide" and x.kind == "box")
 	var eh = _pick(p, live)
 	if not eh.is_empty():
 		hit = eh
@@ -2033,7 +2196,7 @@ func _car_explode() -> void:
 	_explode(cp, 3.2, false, "car_boom")
 	_fb_boom(cp + Vector3(0, 0.6, 0), 1.6)
 	score += 300
-	_float_text(cp + Vector3(0, 1.4, 0), "CAR  +300", true)
+	_float_text(cp + Vector3(0, 1.4, 0), car_card.get("label", "CAR") + "  +300", true)
 	# Pappauto hüpft hoch, landet schief und verkohlt als Wrack wieder auf der Straße
 	car_card.mat.set_shader_parameter("dim", 0.22)
 	var pv: Node3D = car_card.pv
@@ -2047,10 +2210,7 @@ func _car_explode() -> void:
 	tw.tween_property(pv, "position", base + Vector3(0.25, -0.05, -0.3), 0.08)
 	tw.tween_property(pv, "position", base + Vector3(0.25, -0.14, -0.3), 0.1)
 	# Trümmerteile fliegen weg und bleiben liegen: Stoßstange, Reifen, Spiegel
-	var parts = [["car_bumper.png", 1.95, Vector3(-1.9, 0.0, 0.35), Vector3(-0.95, 0.45, 0.18)],
-		["car_tire.png", 0.6, Vector3(-0.9, 0.0, 0.5), Vector3(0.0, 0.25, -0.12)],
-		["car_mirror.png", 0.25, Vector3(-2.6, 0.0, 0.6), Vector3(-PI * 0.4, 0.8, 0.0)]]
-	for pt in parts:
+	for pt in car_card.get("debris", []):
 		var d = _card(pt[0], pt[1], base + Vector3(0, 0.6, 0), "metal")
 		d.mat.set_shader_parameter("dim", 0.45)
 		car_fx.append(d.pv)
@@ -2821,11 +2981,49 @@ func _autotest(dt: float) -> void:
 	elif at_step == 138 and at_t > 18.0:
 		_snap("17_car_smoke")
 		print("after enemy nade health=", health, " round=", stage, " goal=", round_goal, " ammo=", ammo, "/", reserve)
+		# Szenenwechsel in den Hafen
+		health = 100
+		stage = HARBOR_FROM - 1
+		round_kills = round_goal
+		_round_clear()
+		at_step = 150
+	elif at_step == 150 and at_t > 18.7:
+		_snap("18_harbor_fold")
+		at_step = 151
+	elif at_step == 151 and at_t > 20.0:
+		_snap("19_harbor_unfold")
+		at_step = 152
+	elif at_step == 152 and at_t > 23.6:
+		print("HARBOR scene=", scene, " stage=", stage, " ammo=", ammo, "/", reserve, " slots=", slots.size())
+		spawn_t = 999.0
+		cover = false
+		aim_idx = 99
+		for n in ["window1", "window3", "door", "car", "crates", "window0"]:
+			var e = _force_enemy(n)
+			e.aim = 99.0
+		at_step = 153
+	elif at_step == 153 and at_t > 24.6:
+		_snap("20_harbor")
+		cover = true
+		at_step = 154
+	elif at_step == 154 and at_t > 25.4:
+		_snap("21_harbor_cover")
+		cover = false
+		for e in enemies:
+			if not e.get("box", false) and e.state != "fall":
+				e.aim = 99.0
+		_car_explode()
+		at_step = 155
+	elif at_step == 155 and at_t > 26.6:
+		_snap("22_forklift_boom")
+		at_step = 156
+	elif at_step == 156 and at_t > 28.4:
+		_snap("23_forklift_wreck")
 		weapon = "pistol"
 		ammo = 0
 		reserve = 0
 		grenades = 0
 		at_step = 13
-	elif at_step == 13 and at_t > 20.4:
+	elif at_step == 13 and at_t > 31.0:
 		_snap("09_game_over")
 		get_tree().quit()
