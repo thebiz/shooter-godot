@@ -2,16 +2,16 @@
 
 importer="texture"
 type="CompressedTexture2D"
-uid="uid://c21hd8ngtlflk"
-path="res://.godot/imported/h_room.jpg-5ff702a32bfd357bac40ac5eafd696d4.ctex"
+uid="uid://dua7qp6ywqbmc"
+path="res://.godot/imported/h_load.png-431ca6852497ef441c97be90bf646a96.ctex"
 metadata={
 "vram_texture": false
 }
 
 [deps]
 
-source_file="res://art/h_room.jpg"
-dest_files=["res://.godot/imported/h_room.jpg-5ff702a32bfd357bac40ac5eafd696d4.ctex"]
+source_file="res://art/h_load.png"
+dest_files=["res://.godot/imported/h_load.png-431ca6852497ef441c97be90bf646a96.ctex"]
 
 [params]
 

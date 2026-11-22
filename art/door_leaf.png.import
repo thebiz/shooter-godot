@@ -2,16 +2,16 @@
 
 importer="texture"
 type="CompressedTexture2D"
-uid="uid://dmep35ajddb8e"
-path="res://.godot/imported/h_containers.png-759899e20b07dad0b88b1017863cce95.ctex"
+uid="uid://cpryj500rnddm"
+path="res://.godot/imported/door_leaf.png-bb3c9a314d1ff80fee1a4445818fbe68.ctex"
 metadata={
 "vram_texture": false
 }
 
 [deps]
 
-source_file="res://art/h_containers.png"
-dest_files=["res://.godot/imported/h_containers.png-759899e20b07dad0b88b1017863cce95.ctex"]
+source_file="res://art/door_leaf.png"
+dest_files=["res://.godot/imported/door_leaf.png-bb3c9a314d1ff80fee1a4445818fbe68.ctex"]
 
 [params]
 

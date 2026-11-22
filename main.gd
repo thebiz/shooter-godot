@@ -117,16 +117,26 @@ var car_card = {}
 var scene = "street"        # street (Straße, Abendsonne), harbor (Containerhafen bei Nacht, ab Runde 5)
 var scenes = {}             # pro Szene: Kulissen, Spots, Deckung, Auto, Himmel
 var swap_t = -1.0           # läuft während des Szenenwechsels
+var life_t = 0.0            # Uhr für Kran, Lichter, Vögel, Zeitung
+var glows = []              # flackernde Lampen und blinkende Warnlichter {mi, base, mode, k, t, scene}
+var crane_load: Node3D
+var crane_x = Vector2.ZERO  # Fahrweg der Laufkatze (x links, x rechts)
+var birds = []              # aktueller Schwarm
+var bird_t = 6.0
+var bird_mat: ShaderMaterial
+var paper = {}              # Zeitung auf der Straße
+var nb = {}                 # der genervte Nachbar
+var nb_door: Node3D         # Haustür (Scharnier)
+var nb_card = {}
+var nb_snd = {}
 const HARBOR_FROM = 5
-const H_TEX = ["h_containers.png", "h_truck.png", "h_mast.png", "h_forklift.png", "h_pallets.png", "h_cover.png", "h_sky.jpg", "h_ground.jpg", "h_room.jpg", "h_deb_tire.png", "h_deb_tank.png", "h_deb_lamp.png"]
-const H_W = 12.5            # Containerwand
-const H_X = 0.2
-# Luken und Tür der Containerwand (u0, u1, v0, v1 im Bild), gleiche Reihenfolge wie bei der Fassade
-const H_HOLES = [
-	[0.3351, 0.4276, 0.2376, 0.3831], [0.0845, 0.1816, 0.2376, 0.3831],
-	[0.5856, 0.6828, 0.2376, 0.3831], [0.8351, 0.9316, 0.2376, 0.3831],
-	[0.0845, 0.1799, 0.7214, 0.8644], [0.8351, 0.9322, 0.7214, 0.8644],
-	[0.4069, 0.6103, 0.5721, 0.9453]]
+const H_TEX = ["h_stack.png", "h_stack_back.png", "h_prop.png", "h_crane.png", "h_load.png", "h_truck.png", "h_mast.png", "h_forklift.png", "h_pallets.png", "h_cover.png", "h_sky.jpg", "h_ground.jpg", "h_deb_tire.png", "h_deb_tank.png", "h_deb_lamp.png",
+	"door_leaf.png", "curtain.png", "neighbor0.png", "neighbor1.png", "paper.png", "birds.png"]
+const H_W = 12.2            # Containerstapel
+const H_X = 0.6
+# Öffnungen im versetzten Containerstapel (u0, u1, v0, v1 im Bild)
+const S_HOLES = {"door_bl": [0.0778, 0.2503, 0.5209, 0.8929], "door_br": [0.7948, 0.9087, 0.5242, 0.8963],
+	"door_tl": [0.2762, 0.3196, 0.0992, 0.4645], "door_tr": [0.7029, 0.7638, 0.0992, 0.4645]}
 var car_dead = false
 var car_fx = []             # Feuer und Rauch am kaputten Auto
 var car_burn_t = 0.0
@@ -216,10 +226,25 @@ uniform sampler2D tex : source_color, filter_linear_mipmap_anisotropic, repeat_d
 uniform vec3 back_col : source_color = vec3(0.56, 0.44, 0.32);
 uniform float flash = 0.0;
 uniform float dim = 1.0;
+uniform float sway = 0.0;      // Baum wiegt sich (oben), Gardine weht (unten)
+uniform float hang = 0.0;
+uniform float sway_speed = 1.0;
+uniform bool back_tex = false; // Rückseite zeigt das gespiegelte Bild (Tür)
+void vertex() {
+	if (sway > 0.0) {
+		float k = mix(pow(1.0 - UV.y, 1.6), pow(UV.y, 1.2), hang);
+		float t = TIME * sway_speed;
+		float s = sin(t * 0.9 + UV.x * 0.5) * 0.55 + sin(t * 2.1 + UV.y * 3.0 + UV.x * 2.0) * 0.3 + sin(t * 4.7 + UV.y * 9.0 + UV.x * 6.0) * 0.15;
+		VERTEX.x += sway * k * s;
+		VERTEX.z += sway * k * hang * sin(t * 1.7 + UV.y * 5.0 + UV.x * 4.0) * 0.8;
+	}
+}
 void fragment() {
-	vec4 c = texture(tex, UV);
+	vec4 c = texture(tex, back_tex && !FRONT_FACING ? vec2(1.0 - UV.x, UV.y) : UV);
 	vec3 col = c.rgb;
-	if (!FRONT_FACING) {
+	if (back_tex && !FRONT_FACING) {
+		col *= 0.72;
+	} else if (!FRONT_FACING) {
 		// Rückseite: graue Wellpappe
 		float r = fract(UV.x * 90.0);
 		col = back_col * (0.86 + 0.14 * smoothstep(0.3, 0.5, r) * smoothstep(0.9, 0.7, r));
@@ -472,7 +497,8 @@ func _make_world() -> void:
 		if sl.name == "window4":
 			sl.partner = "crates"
 	slots.append({"pos": Vector3(4.25, 0.28, -8.75), "mode": "flip", "busy": false, "name": "car", "box_lift": 1.02})
-	scenes["street"] = {"cards": cards, "slots": slots, "wall": wall, "car": car_card, "sky": street_sky,
+	var street_deco = _make_street_life(fac, fac_h, tree)
+	scenes["street"] = {"deco": street_deco, "cards": cards, "slots": slots, "wall": wall, "car": car_card, "sky": street_sky,
 		"bg": Color(0.86, 0.6, 0.38), "amb": "ambience"}
 	_make_harbor()
 
@@ -534,23 +560,19 @@ func _make_harbor() -> void:
 	add_child(gp)
 	gp.add_child(gi)
 	cards.append({"pv": gp, "mi": gi, "mat": gm, "img": null, "w": 46.0, "h": 15.0, "kind": "ground", "t": 99.0, "delay": 0.0, "up": true, "static": true})
-	# Containerwand mit offenen Luken, dahinter dunkles Wellblech
-	var ct = _card("h_containers.png", H_W, Vector3(H_X, FAC_Y, FAC_Z), "metal")
+	# versetzter Containerstapel, Türen offen; dahinter die Innenräume (perspektivisch passend vergrößert)
+	var ct = _card("h_stack.png", H_W, Vector3(H_X, FAC_Y, FAC_Z), "metal")
 	ct.delay = 0.0
 	cards.append(ct)
 	var ch: float = ct.h
-	var inner = MeshInstance3D.new()
-	var iq = QuadMesh.new()
-	iq.size = Vector2(H_W * 1.06, ch * 1.06)
-	iq.center_offset = Vector3(0, ch * 0.53, 0)
-	inner.mesh = iq
-	var im = StandardMaterial3D.new()
-	im.albedo_texture = load("res://art/h_room.jpg")
-	im.roughness = 1.0
-	inner.material_override = im
-	inner.position = Vector3(0, -0.05, -0.85)
-	ct.pv.add_child(inner)
-	cards.append({"pv": ct.pv, "mi": inner, "mat": im, "img": null, "w": H_W, "h": ch, "kind": "room", "t": 99.0, "delay": 0.0, "up": true, "static": true})
+	var f = (13.0 + 1.0) / 13.0
+	var bk = _card("h_stack_back.png", H_W * f, Vector3.ZERO, "room")
+	_adopt(ct.pv, bk.pv, Vector3(H_X * f - H_X, CAM_UP.y + (FAC_Y - CAM_UP.y) * f - FAC_Y, -1.0))
+	bk.static = true
+	cards.append(bk)
+	var prop = _card("h_prop.png", 2.7, Vector3(-0.5, -0.04, -10.0), "metal")
+	prop.delay = 0.3
+	cards.append(prop)
 	var truck = _card("h_truck.png", 5.6, Vector3(-7.9, -0.05, -10.4), "metal")
 	truck.delay = 0.25
 	cards.append(truck)
@@ -571,26 +593,23 @@ func _make_harbor() -> void:
 	var cov = _card("h_cover.png", 5.2, Vector3(1.05, -0.31, -1.35), "brick")
 	cov.delay = 1.05
 	cards.append(cov)
-	# Spots: Luken zeigen nur Kopf und Brust (die Luken sind niedriger als die Fenster)
-	for i in H_HOLES.size():
-		var hh = H_HOLES[i]
+	# Spots: in den offenen Containern ganze Figur, oben in den halb offenen Türen nur ein Streifen
+	for n in S_HOLES:
+		var hh = S_HOLES[n]
 		var x = H_X + ((hh[0] + hh[1]) * 0.5 - 0.5) * H_W
 		var ybot = FAC_Y + (1.0 - hh[3]) * ch
-		var ytop = FAC_Y + (1.0 - hh[2]) * ch
-		if i == 6:   # Containertür: ganze Figur auf dem Containerboden
-			slots.append({"pos": Vector3(x, FAC_Y + 0.07 * ch, FAC_Z - 0.3), "mode": "flip", "busy": false, "name": "door"})
-		else:
-			var drop = ENEMY_H - (ytop - ybot) + 0.03
-			slots.append({"pos": Vector3(x, ybot - drop, FAC_Z - 0.32), "mode": "flip", "busy": false, "name": "window%d" % i, "box_lift": drop})
-	slots.append({"pos": Vector3(-2.95, 0.3, -7.4), "mode": "flip", "busy": false, "name": "crates", "partner": "window4"})
+		slots.append({"pos": Vector3(x, ybot - 0.03, FAC_Z - 0.5), "mode": "flip", "busy": false, "name": n})
+	# oben auf dem mittleren Container, hinter der Schiffsschraube, hinter den Paletten, hinter dem Gabelstapler
+	slots.append({"pos": Vector3(H_X, FAC_Y + (1.0 - 0.058) * ch - 0.04, FAC_Z - 0.35), "mode": "flip", "busy": false, "name": "roof"})
+	slots.append({"pos": Vector3(0.55, 0.0, -10.4), "mode": "flip", "busy": false, "name": "prop"})
+	slots.append({"pos": Vector3(-2.95, 0.3, -7.4), "mode": "flip", "busy": false, "name": "crates"})
+	# Gabelstapler-Spot liegt aus Spielersicht vor der rechten unteren Containertür: nie beide gleichzeitig
+	slots.append({"pos": Vector3(4.0, 0.05, -8.75), "mode": "flip", "busy": false, "name": "car", "box_lift": 1.05, "partner": "door_br"})
 	for sl in slots:
-		if sl.name == "window4":
-			sl.partner = "crates"
-		if sl.name == "window5":
+		if sl.name == "door_br":
 			sl.partner = "car"
-	# Gabelstapler-Spot liegt aus Spielersicht vor der rechten unteren Luke: nie beide gleichzeitig
-	slots.append({"pos": Vector3(4.0, 0.05, -8.75), "mode": "flip", "busy": false, "name": "car", "box_lift": 1.05, "partner": "window5"})
-	scenes["harbor"] = {"cards": cards, "slots": slots, "wall": cov, "car": fork, "sky": sky.pv,
+	var harbor_deco = _make_harbor_life(sky.pv)
+	scenes["harbor"] = {"deco": harbor_deco, "cards": cards, "slots": slots, "wall": cov, "car": fork, "sky": sky.pv,
 		"bg": Color(0.05, 0.07, 0.11), "amb": "ambience_harbor"}
 
 
@@ -600,6 +619,8 @@ func _use_scene(n: String) -> void:
 	for k in scenes:
 		var on = k == n
 		scenes[k].sky.visible = on
+		if scenes[k].has("deco"):
+			scenes[k].deco.visible = on
 		for c in scenes[k].cards:
 			c.pv.visible = on
 	var sc = scenes[n]
@@ -1241,6 +1262,7 @@ func _close_book() -> void:
 
 func _back_to_street() -> void:
 	swap_t = -1.0
+	_nb_reset()
 	if scene != "street":
 		_car_reset()
 		_use_scene("street")
@@ -1254,6 +1276,7 @@ func _start_game() -> void:
 	enemies.clear()
 	for s in slots:
 		s.busy = false
+	_nb_reset()
 	for h in holes_live:
 		if is_instance_valid(h):
 			h.queue_free()
@@ -1300,6 +1323,7 @@ func _round_setup() -> void:
 	ammo = mini(MAG, pool)
 	reserve = pool - ammo
 	round_kills = 0
+	_nb_plan()
 
 
 func _round_clear() -> void:
@@ -1445,6 +1469,7 @@ func _process(dt: float) -> void:
 	_proj_update(dt)
 	_fb_update(dt)
 	_lights_update(dt)
+	_life_update(dt)
 	_car_burn(dt)
 	_camera_update(dt)
 	if autotest:
@@ -1459,6 +1484,7 @@ func _play_update(dt: float) -> void:
 			swap_t -= dt
 			if swap_t <= 0.0:
 				_car_reset()
+				_nb_reset()
 				for f in fbs:
 					if is_instance_valid(f.n):
 						f.n.queue_free()
@@ -2029,7 +2055,12 @@ func _shoot(p: Vector2) -> void:
 	# Mündungslicht der eigenen Waffe (rechts unten) erhellt kurz die Mauer
 	_flash_light(cam.global_transform * Vector3(0.35, -0.3, -0.6), 3.5, Color(1.0, 0.72, 0.4), 3.0)
 	var targets = (cards + enemies).filter(func(x): return x != wall)
+	if nb.get("state", "off") == "stay":
+		targets.append(nb_card)
 	var hit = _pick(p, targets)
+	if not hit.is_empty() and hit.card == nb_card:
+		_nb_hit(hit.point)
+		return
 	# Bonus-Kisten haben Vorrang vor der Kulisse: steht eine Kiste knapp hinter dem Kistenstapel,
 	# soll der Schuss nicht im Holz davor hängen bleiben
 	var live = enemies.filter(func(x): return x.state != "fall" and x.state != "hide" and x.kind == "box")
@@ -2981,32 +3012,72 @@ func _autotest(dt: float) -> void:
 	elif at_step == 138 and at_t > 18.0:
 		_snap("17_car_smoke")
 		print("after enemy nade health=", health, " round=", stage, " goal=", round_goal, " ammo=", ammo, "/", reserve)
+		# Nachbar, Vögel, Zeitung
+		for e in enemies:
+			if e.state != "fall":
+				e.state = "hide"
+				e.t = 0.0
+		spawn_t = 999.0
+		var dsl = _door_slot()
+		dsl.busy = false
+		_nb_start()
+		bird_t = 0.0
+		paper.next = 0.0
+		paper.pos = Vector3(-4.0, 0.012, -10.0)
+		weapon = "pistol"
+		ammo = 8
+		at_step = 140
+	elif at_step == 140 and at_t > 18.9:
+		cover = false
+		_snap("17n_neighbor")
+		var bp: Vector3 = nb_card.mi.global_transform * Vector3((0.3 - 0.5) * nb_card.w, (1.0 - 0.07) * nb_card.h, 0.0)
+		aim = cam.unproject_position(bp)
+		var sc0 = score
+		_shoot(aim)
+		print("NEIGHBOR shot=", nb.shot, " score ", sc0, " -> ", score)
+		at_step = 141
+	elif at_step == 141 and at_t > 19.25:
+		_snap("17o_beer")
+		at_step = 142
+	elif at_step == 142 and at_t > 20.4:
+		_snap("17q_life")
+		print("PAPER pos=", paper.pos, " air=", paper.air, " scr=", cam.unproject_position(paper.pos), " birds=", birds.size())
+		at_step = 143
+	elif at_step == 143 and at_t > 21.6:
+		_snap("17r_paper")
+		print("PAPER pos=", paper.pos, " air=", paper.air, " vis=", paper.n.is_visible_in_tree(), " scr=", cam.unproject_position(paper.pos))
+		at_step = 144
+	elif at_step == 144 and at_t > 24.3:
+		print("NEIGHBOR state=", nb.state, " door=", nb_door.rotation_degrees.y)
+		_snap("17p_door_shut")
+		at_step = 145
+	elif at_step == 145 and at_t > 25.0:
 		# Szenenwechsel in den Hafen
 		health = 100
 		stage = HARBOR_FROM - 1
 		round_kills = round_goal
 		_round_clear()
 		at_step = 150
-	elif at_step == 150 and at_t > 18.7:
+	elif at_step == 150 and at_t > 25.7:
 		_snap("18_harbor_fold")
 		at_step = 151
-	elif at_step == 151 and at_t > 20.0:
+	elif at_step == 151 and at_t > 27.0:
 		_snap("19_harbor_unfold")
 		at_step = 152
-	elif at_step == 152 and at_t > 23.6:
+	elif at_step == 152 and at_t > 30.6:
 		print("HARBOR scene=", scene, " stage=", stage, " ammo=", ammo, "/", reserve, " slots=", slots.size())
 		spawn_t = 999.0
 		cover = false
 		aim_idx = 99
-		for n in ["window1", "window3", "door", "car", "crates", "window0"]:
+		for n in ["door_bl", "door_tl", "door_tr", "roof", "prop", "crates", "car"]:
 			var e = _force_enemy(n)
 			e.aim = 99.0
 		at_step = 153
-	elif at_step == 153 and at_t > 24.6:
+	elif at_step == 153 and at_t > 31.6:
 		_snap("20_harbor")
 		cover = true
 		at_step = 154
-	elif at_step == 154 and at_t > 25.4:
+	elif at_step == 154 and at_t > 32.4:
 		_snap("21_harbor_cover")
 		cover = false
 		for e in enemies:
@@ -3014,16 +3085,499 @@ func _autotest(dt: float) -> void:
 				e.aim = 99.0
 		_car_explode()
 		at_step = 155
-	elif at_step == 155 and at_t > 26.6:
+	elif at_step == 155 and at_t > 33.6:
 		_snap("22_forklift_boom")
 		at_step = 156
-	elif at_step == 156 and at_t > 28.4:
+	elif at_step == 156 and at_t > 35.4:
 		_snap("23_forklift_wreck")
+		life_t = 14.0
 		weapon = "pistol"
 		ammo = 0
 		reserve = 0
 		grenades = 0
 		at_step = 13
-	elif at_step == 13 and at_t > 31.0:
+	elif at_step == 13 and at_t > 38.0:
 		_snap("09_game_over")
 		get_tree().quit()
+
+
+# ---------------------------------------------------------------------------
+# Leben in den Szenen: Baum, Gardine, Vögel, Zeitung, Nachbar (Straße) – Kran und Lichter (Hafen)
+
+# Karte an einen anderen Knoten hängen (lokale Position)
+func _adopt(parent: Node3D, child: Node3D, local: Vector3) -> void:
+	child.get_parent().remove_child(child)
+	parent.add_child(child)
+	child.position = local
+
+
+func _subdivide(c: Dictionary, sx: int, sy: int) -> void:
+	var q: QuadMesh = c.mi.mesh
+	q.subdivide_width = sx
+	q.subdivide_depth = sy
+
+
+func _make_street_life(fac: Dictionary, fac_h: float, tree: Dictionary) -> Node3D:
+	var deco = Node3D.new()
+	add_child(deco)
+	# Baum wiegt sich leicht im Wind
+	_subdivide(tree, 8, 14)
+	tree.mat.set_shader_parameter("sway", 0.11)
+	tree.mat.set_shader_parameter("sway_speed", 1.0)
+	# vergilbte Gardine im rechten oberen Fenster, hinter den Gegnern, weht hin und her
+	var hh = HOLES[3]
+	var ww = (hh[1] - hh[0]) * FAC_W
+	var wh = (hh[3] - hh[2]) * fac_h
+	var cu = _card("curtain.png", ww * 0.5, Vector3.ZERO, "room", wh * 0.92)
+	_adopt(fac.pv, cu.pv, Vector3((hh[0] - 0.5) * FAC_W + ww * 0.27, (1.0 - hh[3]) * fac_h + wh * 0.06, -0.55))
+	_subdivide(cu, 6, 12)
+	cu.mat.set_shader_parameter("sway", 0.09)
+	cu.mat.set_shader_parameter("hang", 1.0)
+	cu.mat.set_shader_parameter("sway_speed", 1.3)
+	cu.mat.set_shader_parameter("dim", 0.62)
+	# Haustür: hängt am linken Rand der Türöffnung, steht normalerweise ganz offen an der Wand
+	var dh = HOLES[6]
+	var dw = (dh[1] - dh[0]) * FAC_W
+	var dhh = (dh[3] - dh[2]) * fac_h
+	var door = _card("door_leaf.png", dw, Vector3.ZERO, "wood", dhh)
+	door.mat.set_shader_parameter("back_tex", true)
+	nb_door = Node3D.new()
+	fac.pv.add_child(nb_door)
+	nb_door.position = Vector3((dh[0] - 0.5) * FAC_W, (1.0 - dh[3]) * fac_h, 0.04)
+	_adopt(nb_door, door.pv, Vector3(dw * 0.5, 0, 0))
+	nb_door.rotation.y = deg_to_rad(-163.0)
+	# der Nachbar (Pappaufsteller wie die Gegner)
+	var npos = Vector3(((dh[0] + dh[1]) * 0.5 - 0.5) * FAC_W + 0.05, FAC_Y + (1.0 - dh[3]) * fac_h, FAC_Z - 0.3)
+	nb_card = _card("neighbor0.png", 1.85 * 720.0 / 1166.0, npos, "npc", 1.85)
+	nb_card.pv.visible = false
+	nb = {"state": "off", "t": 0.0, "at": 999.0, "shot": false, "stay": 0.0}
+	for n in ["nb_yell0", "nb_yell1", "nb_yell2", "nb_beer0", "nb_beer1", "nb_beer2"]:
+		nb_snd[n] = load("res://sfx/voice/" + n + ".ogg")
+	for n in ["door_slam", "door_open", "bottle"]:
+		sounds[n] = load("res://sfx/" + n + ".ogg")
+	# Vögel (Schwarm zieht ab und zu über die Dächer)
+	var bs = Shader.new()
+	bs.code = """
+shader_type spatial;
+render_mode unshaded, cull_disabled, depth_draw_never, shadows_disabled;
+uniform sampler2D tex : source_color, filter_linear_mipmap;
+instance uniform float frame = 0.0;
+void fragment() {
+	vec4 c = texture(tex, vec2((UV.x + frame) * 0.25, UV.y));
+	ALBEDO = c.rgb;
+	ALPHA = c.a * 0.9;
+}
+"""
+	bird_mat = ShaderMaterial.new()
+	bird_mat.shader = bs
+	bird_mat.set_shader_parameter("tex", _tex("birds.png"))
+	# Zeitung: Blatt mit vielen Feldern, wird im Shader gebogen und flattert
+	var ps = Shader.new()
+	ps.code = """
+shader_type spatial;
+render_mode cull_disabled, depth_prepass_alpha, diffuse_lambert, specular_disabled;
+uniform sampler2D tex : source_color, filter_linear_mipmap;
+uniform float curl = 0.0;
+uniform float roll = 0.0;
+uniform float flap = 0.0;
+void vertex() {
+	vec2 q = VERTEX.xz;
+	float r = max(0.0, q.x + q.y + 0.1);
+	VERTEX.y += curl * q.x * q.x * 3.0 + roll * r * r * 2.2;
+	VERTEX.y += flap * sin(TIME * 17.0 + q.x * 11.0 + q.y * 7.0) * 0.035 * (abs(q.x) + abs(q.y) + 0.1);
+}
+void fragment() {
+	vec4 c = texture(tex, UV);
+	ALBEDO = c.rgb * (FRONT_FACING ? 0.95 : 0.7);
+	ALPHA = c.a;
+	ALPHA_SCISSOR_THRESHOLD = 0.5;
+	ROUGHNESS = 1.0;
+}
+"""
+	var pm = ShaderMaterial.new()
+	pm.shader = ps
+	pm.set_shader_parameter("tex", _tex("paper.png"))
+	var pl = PlaneMesh.new()
+	pl.size = Vector2(0.46, 0.56)
+	pl.subdivide_width = 10
+	pl.subdivide_depth = 12
+	var pmi = MeshInstance3D.new()
+	pmi.mesh = pl
+	pmi.material_override = pm
+	pmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	var pn = Node3D.new()
+	deco.add_child(pn)
+	pn.add_child(pmi)
+	# unsichtbarer Leuchtpunkt unter der Straße, damit der Licht-Shader schon vor dem Hafen fertig ist
+	_glow(deco, _soft_tex(16, 1.4), Vector3(0, -3.4, -7.0), 0.2, Color(0, 0, 0), "flick")
+	paper = {"n": pn, "mat": pm, "pos": Vector3(-3.2, 0.012, -10.3), "vel": Vector3.ZERO, "rot": Vector3(0, 0.4, 0), "av": Vector3.ZERO,
+		"gust": 0.0, "next": 5.0, "curl": 0.12, "roll": 0.0, "flap": 0.0, "air": false}
+	pn.position = paper.pos
+	pn.rotation = paper.rot
+	return deco
+
+
+func _make_harbor_life(sky_pv: Node3D) -> Node3D:
+	var deco = Node3D.new()
+	add_child(deco)
+	# Kran links hinten, die Laufkatze fährt mit einem Container am Ausleger hin und her
+	var cw = 55.0
+	var cx = 0.0
+	var cy = 9.1     # Fuß steht hinter dem Containerstapel
+	var cz = -60.0
+	var crane = _card("h_crane.png", cw, Vector3(cx, cy, cz), "sky")
+	_adopt(deco, crane.pv, Vector3(cx, cy, cz))
+	var chh: float = crane.h
+	var boom_y = cy + (1.0 - 0.4236) * chh
+	crane_load = Node3D.new()
+	deco.add_child(crane_load)
+	crane_load.position = Vector3(cx - 0.3 * cw, boom_y + 0.6, cz + 0.15)
+	var ld = _card("h_load.png", 6.5, Vector3.ZERO, "sky")
+	_adopt(crane_load, ld.pv, Vector3(0, -ld.h, 0))
+	crane_x = Vector2(cx - 0.45 * cw, cx - 0.12 * cw)
+	var gl = _soft_tex(64, 1.4)
+	# rote Warnlichter (blinken) und Lampen unter dem Ausleger (flackern)
+	for uv in [Vector2(0.623, 0.007), Vector2(0.6723, 0.007), Vector2(0.033, 0.325), Vector2(0.9764, 0.331)]:
+		_glow(deco, gl, Vector3(cx + (uv.x - 0.5) * cw, cy + (1.0 - uv.y) * chh, cz + 0.3), 2.2, Color(1.0, 0.12, 0.08), "blink")
+	for u in [0.1861, 0.3264, 0.5338, 0.6679]:
+		_glow(deco, gl, Vector3(cx + (u - 0.5) * cw, cy + (1.0 - 0.411) * chh, cz + 0.3), 2.6, Color(1.0, 0.72, 0.38), "flick")
+	# Lampen im Hintergrundbild
+	for uv in [Vector2(0.0757, 0.3319), Vector2(0.1323, 0.486), Vector2(0.2398, 0.5505), Vector2(0.2957, 0.3806), Vector2(0.4603, 0.4269),
+			Vector2(0.4034, 0.5974), Vector2(0.6928, 0.5981), Vector2(0.7568, 0.5883), Vector2(0.042, 0.5018), Vector2(0.6023, 0.6261)]:
+		_glow(deco, gl, Vector3((uv.x - 0.5) * 220.0, -28.6 + (1.0 - uv.y) * 94.27, -74.6), 4.0, Color(1.0, 0.75, 0.42), "flick")
+	for uv in [Vector2(0.5822, 0.42), Vector2(0.7965, 0.5024), Vector2(0.0799, 0.5901)]:
+		_glow(deco, gl, Vector3((uv.x - 0.5) * 220.0, -28.6 + (1.0 - uv.y) * 94.27, -74.6), 5.5, Color(0.8, 0.9, 1.0), "flick")
+	for uv in [Vector2(0.2294, 0.1437), Vector2(0.4074, 0.204)]:
+		_glow(deco, gl, Vector3((uv.x - 0.5) * 220.0, -28.6 + (1.0 - uv.y) * 94.27, -74.6), 3.0, Color(1.0, 0.1, 0.06), "blink")
+	# Flutlichtmast rechts: Lampenkranz oben
+	for u in [0.22, 0.5, 0.78]:
+		_glow(deco, gl, Vector3(8.4 + (u - 0.5) * 1.9, -0.05 + 7.25, -11.5), 1.1, Color(1.0, 0.8, 0.5), "flick")
+	return deco
+
+
+var glow_shader: Shader
+func _glow(parent: Node3D, tex: Texture2D, pos: Vector3, size: float, col: Color, mode: String) -> void:
+	if glow_shader == null:
+		glow_shader = Shader.new()
+		glow_shader.code = """
+shader_type spatial;
+render_mode unshaded, blend_add, depth_draw_never, cull_disabled, shadows_disabled;
+uniform sampler2D tex : filter_linear_mipmap;
+uniform vec4 col : source_color = vec4(1.0);
+instance uniform float k = 1.0;
+void fragment() {
+	float a = texture(tex, UV).a;
+	ALBEDO = col.rgb;
+	ALPHA = a * k * col.a;
+}
+"""
+	var m = ShaderMaterial.new()
+	m.shader = glow_shader
+	m.set_shader_parameter("tex", tex)
+	m.set_shader_parameter("col", Color(col.r, col.g, col.b, 0.85))
+	var mi = MeshInstance3D.new()
+	var q = QuadMesh.new()
+	q.size = Vector2(size, size)
+	mi.mesh = q
+	mi.material_override = m
+	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	parent.add_child(mi)
+	mi.position = pos
+	glows.append({"mi": mi, "mode": mode, "k": 1.0, "t": randf() * 3.0, "dip": 0.0, "ph": randf() * TAU})
+
+
+func _life_update(dt: float) -> void:
+	life_t += dt
+	if scene == "harbor":
+		_harbor_update(dt)
+	else:
+		_birds_update(dt)
+		_paper_update(dt)
+	_nb_update(dt)
+
+
+func _harbor_update(dt: float) -> void:
+	# Lampen: meist ruhig, ab und zu ein kurzes Flackern; Warnlichter blinken langsam
+	for g in glows:
+		var k = 1.0
+		if g.mode == "blink":
+			k = 1.0 if fmod(life_t + g.ph, 1.8) < 0.7 else 0.08
+		else:
+			g.t -= dt
+			if g.t <= 0.0:
+				if g.dip > 0.0:
+					g.dip = 0.0
+					g.t = randf_range(1.5, 7.0) if randf() < 0.7 else randf_range(0.04, 0.12)
+				else:
+					g.dip = randf_range(0.35, 0.85)
+					g.t = randf_range(0.04, 0.16)
+			k = 1.0 - g.dip + sin(life_t * 23.0 + g.ph) * 0.04
+		g.k = lerpf(g.k, k, 1.0 - exp(-dt * 30.0))
+		g.mi.set_instance_shader_parameter("k", g.k)
+	# Laufkatze: fährt langsam hin und her, hält an den Enden, der Container pendelt nach
+	if crane_load != null:
+		var cyc = fmod(life_t, 44.0)
+		var u: float
+		if cyc < 16.0:
+			u = smoothstep(0.0, 16.0, cyc)
+		elif cyc < 22.0:
+			u = 1.0
+		elif cyc < 38.0:
+			u = 1.0 - smoothstep(22.0, 38.0, cyc)
+		else:
+			u = 0.0
+		var nx = lerpf(crane_x.x, crane_x.y, u)
+		var v = (nx - crane_load.position.x) / maxf(dt, 0.001)
+		crane_load.position.x = nx
+		crane_load.rotation.z = lerpf(crane_load.rotation.z, clampf(-v * 0.018, -0.06, 0.06) + sin(life_t * 1.1) * 0.012, 1.0 - exp(-dt * 1.5))
+
+
+func _birds_update(dt: float) -> void:
+	bird_t -= dt
+	if bird_t <= 0.0 and birds.is_empty() and scenes.has("street"):
+		bird_t = randf_range(16.0, 30.0)
+		var dir = 1.0 if randf() < 0.5 else -1.0
+		var n = randi_range(4, 7)
+		var y0 = randf_range(5.7, 6.7)
+		var spd = randf_range(5.5, 7.0)
+		for i in n:
+			var mi = MeshInstance3D.new()
+			var q = QuadMesh.new()
+			q.size = Vector2(0.55, 0.58)
+			mi.mesh = q
+			mi.material_override = bird_mat
+			mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+			scenes.street.deco.add_child(mi)
+			mi.scale = Vector3(dir, 1, 1)
+			var b = {"mi": mi, "x": -17.0 * dir - dir * randf_range(0.0, 3.5), "y": y0 + randf_range(-0.7, 0.7), "z": -11.0 + randf_range(-1.0, 0.8),
+				"spd": spd * randf_range(0.92, 1.08), "dir": dir, "ph": randf() * 4.0, "glide": 0.0}
+			birds.append(b)
+	for i in range(birds.size() - 1, -1, -1):
+		var b = birds[i]
+		b.x += b.dir * b.spd * dt
+		b.ph += dt * 9.0
+		var fr: float
+		if b.glide > 0.0:
+			b.glide -= dt
+			fr = 3.0
+		else:
+			fr = [0.0, 1.0, 2.0, 1.0][int(b.ph) % 4]
+			if randf() < dt * 0.25:
+				b.glide = randf_range(0.5, 1.1)
+		b.mi.position = Vector3(b.x, b.y + sin(b.ph * 0.35) * 0.12, b.z)
+		b.mi.set_instance_shader_parameter("frame", fr)
+		if absf(b.x) > 21.0:
+			b.mi.queue_free()
+			birds.remove_at(i)
+
+
+func _paper_update(dt: float) -> void:
+	if paper.is_empty():
+		return
+	var pp = paper
+	pp.next -= dt
+	if pp.next <= 0.0 and pp.gust <= 0.0:
+		pp.gust = randf_range(2.2, 4.2)
+		pp.next = randf_range(7.0, 15.0)
+		pp.air = true
+		pp.vel.y = randf_range(1.2, 1.8)
+		pp.av = Vector3(randf_range(-7, 7), randf_range(-2, 2), randf_range(-6, 6))
+	if pp.air:
+		var wind = 0.0
+		if pp.gust > 0.0:
+			pp.gust -= dt
+			wind = 3.4
+			# Auftrieb in kleinen Böen, das Blatt springt und überschlägt sich
+			if randf() < dt * 2.2 and pp.pos.y < 0.9:
+				pp.vel.y += randf_range(0.6, 1.4)
+				pp.av += Vector3(randf_range(-5, 5), randf_range(-2, 2), randf_range(-5, 5))
+		pp.vel.x = lerpf(pp.vel.x, wind, 1.0 - exp(-dt * 1.6))
+		pp.vel.z = lerpf(pp.vel.z, sin(life_t * 0.7) * 0.4, 1.0 - exp(-dt))
+		pp.vel.y -= 4.2 * dt
+		pp.vel.y = maxf(pp.vel.y, -0.9)
+		pp.pos += pp.vel * dt
+		pp.pos.z = clampf(pp.pos.z, -11.4, -9.4)
+		pp.rot += pp.av * dt
+		pp.av = pp.av.lerp(Vector3.ZERO, 1.0 - exp(-dt * 0.8))
+		pp.curl = lerpf(pp.curl, sin(life_t * 3.1) * 0.45, 1.0 - exp(-dt * 5.0))
+		pp.roll = lerpf(pp.roll, 0.3 + sin(life_t * 2.3) * 0.25, 1.0 - exp(-dt * 4.0))
+		pp.flap = lerpf(pp.flap, 1.0, 1.0 - exp(-dt * 6.0))
+		if pp.pos.y <= 0.012 and pp.vel.y < 0.0:
+			if pp.gust > 0.0:
+				pp.vel.y = randf_range(0.6, 1.4)   # schlägt kurz auf und wird weitergetrieben
+				pp.pos.y = 0.012
+			else:
+				pp.pos.y = 0.012
+				pp.air = false
+				pp.vel = Vector3.ZERO
+	else:
+		# liegt: richtet sich flach aus (mit der Vorder- oder Rückseite nach oben), zuckt ein bisschen
+		pp.rot.x = lerpf(pp.rot.x, roundf(pp.rot.x / PI) * PI, 1.0 - exp(-dt * 8.0))
+		pp.rot.z = lerpf(pp.rot.z, roundf(pp.rot.z / PI) * PI, 1.0 - exp(-dt * 8.0))
+		pp.curl = lerpf(pp.curl, 0.12, 1.0 - exp(-dt * 3.0))
+		pp.roll = lerpf(pp.roll, 0.1 + 0.08 * sin(life_t * 1.3), 1.0 - exp(-dt * 3.0))
+		pp.flap = lerpf(pp.flap, 0.12, 1.0 - exp(-dt * 3.0))
+	if pp.pos.x > 10.5:
+		pp.pos = Vector3(-10.5, 0.012, randf_range(-10.8, -9.8))
+		pp.vel = Vector3.ZERO
+		pp.air = false
+		pp.gust = 0.0
+	pp.n.position = pp.pos
+	pp.n.rotation = pp.rot
+	pp.mat.set_shader_parameter("curl", pp.curl)
+	pp.mat.set_shader_parameter("roll", pp.roll)
+	pp.mat.set_shader_parameter("flap", pp.flap)
+
+
+# --- Nachbar: reißt mitten in der Schießerei die Tür auf und meckert
+func _nb_plan() -> void:
+	if nb.is_empty():
+		return
+	nb.at = randf_range(9.0, 22.0) if (stage <= 2 or randf() < 0.65) else 999.0
+	nb.t = 0.0
+
+
+func _door_slot() -> Dictionary:
+	for sl in slots:
+		if sl.name == "door":
+			return sl
+	return {}
+
+
+func _nb_start() -> void:
+	var sl = _door_slot()
+	if sl.is_empty():
+		return
+	sl.busy = true
+	_evt("neighbor")
+	nb.state = "up"
+	nb.t = 0.0
+	nb.shot = false
+	nb_card.mat.set_shader_parameter("tex", _tex("neighbor0.png"))
+	nb_card.img = img_cache.get("neighbor0.png")
+	nb_card.pv.visible = true
+	nb_card.pv.rotation.x = -PI * 0.5
+	var tw = create_tween()
+	tw.tween_property(nb_card.pv, "rotation:x", 0.0, 0.32).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	_sfx("target_up", -4.0, 0.1)
+	var line = "nb_yell%d" % (randi() % 3)
+	nb.stay = nb_snd[line].get_length() + 0.9
+	get_tree().create_timer(0.3).timeout.connect(func(): _nb_say(line))
+
+
+func _nb_say(line: String) -> void:
+	if not nb_card.pv.visible:
+		return
+	var pl = AudioStreamPlayer3D.new()
+	pl.stream = nb_snd[line]
+	pl.unit_size = 16.0
+	pl.volume_db = 4.0
+	pl.attenuation_filter_cutoff_hz = 20500.0
+	add_child(pl)
+	pl.global_position = nb_card.pv.global_position + Vector3(0, 1.6, 0.3)
+	pl.finished.connect(pl.queue_free)
+	pl.play()
+
+
+func _nb_hit(pt: Vector3) -> void:
+	if nb.shot:
+		return
+	nb.shot = true
+	_evt("neighbor beer")
+	# Flasche zerspringt: Glassplitter, Bierspritzer, er starrt auf seine leere Hand
+	var bp: Vector3 = nb_card.mi.global_transform * Vector3((0.3 - 0.5) * nb_card.w, (1.0 - 0.07) * nb_card.h, 0.05)
+	fx_k = 1.0
+	_sparks(bp, Vector3(0, 0.3, 1).normalized(), 10)
+	_chunks(bp, Vector3(0, 0.4, 1).normalized(), 14, [Color(0.35, 0.2, 0.08), Color(0.55, 0.36, 0.15), Color(0.85, 0.8, 0.7)], 0.03)
+	_dust(bp, Vector3(0, 0.2, 1).normalized(), 8, Color(0.85, 0.62, 0.2), 0.3)
+	var sp = AudioStreamPlayer3D.new()
+	sp.stream = sounds["bottle"]
+	sp.unit_size = 16.0
+	sp.volume_db = 3.0
+	add_child(sp)
+	sp.global_position = bp
+	sp.finished.connect(sp.queue_free)
+	sp.play()
+	nb_card.mat.set_shader_parameter("tex", _tex("neighbor1.png"))
+	nb_card.img = img_cache.get("neighbor1.png", nb_card.img)
+	score = maxi(0, score - 100)
+	_float_text(bp + Vector3(0.2, 0.35, 0.9), "MY BEER!  -100", true)
+	var line = "nb_beer%d" % (randi() % 3)
+	nb.stay = maxf(nb.stay, nb.t + nb_snd[line].get_length() + 1.0)
+	get_tree().create_timer(0.45).timeout.connect(func(): _nb_say(line))
+
+
+func _nb_update(dt: float) -> void:
+	if nb.is_empty():
+		return
+	if nb.state == "off":
+		if state == "play" and scene == "street" and break_t <= 0.0 and not panel_open:
+			nb.t += dt
+			if nb.t >= nb.at:
+				nb.at = 999.0
+				var sl = _door_slot()
+				if not sl.is_empty() and not sl.busy:
+					_nb_start()
+				else:
+					nb.at = nb.t + 2.5   # Tür gerade besetzt: gleich nochmal versuchen
+		return
+	nb.t += dt
+	match nb.state:
+		"up":
+			if nb.t > 0.35:
+				nb.state = "stay"
+		"stay":
+			if nb.t > nb.stay:
+				nb.state = "down"
+				nb.t = 0.0
+				var tw = create_tween()
+				tw.tween_property(nb_card.pv, "rotation:x", -PI * 0.5, 0.22).set_ease(Tween.EASE_IN)
+		"down":
+			if nb.t > 0.25:
+				nb_card.pv.visible = false
+				nb.state = "slam"
+				nb.t = 0.0
+				var tw = create_tween()
+				tw.tween_property(nb_door, "rotation:y", 0.0, 0.2).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
+		"slam":
+			if nb.t > 0.2:
+				nb.state = "closed"
+				nb.t = 0.0
+				var sp = AudioStreamPlayer3D.new()
+				sp.stream = sounds["door_slam"]
+				sp.unit_size = 18.0
+				sp.volume_db = 4.0
+				add_child(sp)
+				sp.global_position = nb_door.global_position + Vector3(0.7, 1.5, 0.2)
+				sp.finished.connect(sp.queue_free)
+				sp.play()
+				shake = maxf(shake, 0.18)
+				fx_k = 1.0
+				_dust(nb_door.global_position + Vector3(0.7, 0.1, 0.15), Vector3(0, 0.3, 1).normalized(), 8, Color(0.7, 0.6, 0.5), 0.4)
+		"closed":
+			if nb.t > 3.8:
+				nb.state = "reopen"
+				nb.t = 0.0
+				_sfx("door_open", -6.0, 0.05)
+				var tw = create_tween()
+				tw.tween_property(nb_door, "rotation:y", deg_to_rad(-163.0), 1.3).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+		"reopen":
+			if nb.t > 1.35:
+				nb.state = "off"
+				nb.t = 0.0
+				var sl = _door_slot()
+				if not sl.is_empty():
+					sl.busy = false
+
+
+func _nb_reset() -> void:
+	if nb.is_empty():
+		return
+	nb.state = "off"
+	nb.t = 0.0
+	nb_card.pv.visible = false
+	nb_door.rotation.y = deg_to_rad(-163.0)
+	if scenes.has("street"):
+		for sl in scenes.street.slots:
+			if sl.name == "door":
+				sl.busy = false
