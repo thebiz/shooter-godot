@@ -150,6 +150,13 @@ static var upd_done = false
 var autotest = false
 var at_t = 0.0
 var at_step = 0
+var mesh_cache = {}         # Partikel-Flächen nach Material und Größe, einmal angelegt
+var fb_mesh: QuadMesh
+var sfx_pool = []           # feste Ton-Abspieler statt für jeden Ton einen neuen
+var sfx_next = 0
+var label_pool = []         # Punkte-Texte zum Wiederverwenden
+var label_next = 0
+var hitch_total = 0
 var evlog = []              # letzte Ereignisse (für das Ruckel-Protokoll)
 var hitches = []            # gemessene Hänger: {ms, what}
 var frame_avg = 0.016
@@ -561,13 +568,27 @@ func _bark(e: Dictionary, cat: String, chance: float = 1.0, delay: float = 0.0, 
 func _sfx(n: String, vol: float = 0.0, pitch_var: float = 0.08) -> void:
 	if not sounds.has(n):
 		return
-	var p = AudioStreamPlayer.new()
+	if sfx_pool.is_empty():
+		for i in 16:
+			var np = AudioStreamPlayer.new()
+			add_child(np)
+			sfx_pool.append(np)
+	var p: AudioStreamPlayer = null
+	for i in sfx_pool.size():
+		var c: AudioStreamPlayer = sfx_pool[(sfx_next + i) % sfx_pool.size()]
+		if not c.playing:
+			p = c
+			sfx_next = (sfx_next + i + 1) % sfx_pool.size()
+			break
+	if p == null:
+		p = sfx_pool[sfx_next]
+		sfx_next = (sfx_next + 1) % sfx_pool.size()
 	p.stream = sounds[n]
 	p.volume_db = vol
 	p.pitch_scale = 1.0 + randf_range(-pitch_var, pitch_var)
-	add_child(p)
-	p.finished.connect(p.queue_free)
 	p.play()
+	if vol > -60.0 and not n.begins_with("target"):
+		_evt("snd " + n)
 
 
 # ================================================================ HUD
@@ -861,6 +882,7 @@ func _hud_draw(c: Control) -> void:
 	if state == "over" and st_t > 1.2 and not hitches.is_empty():
 		var ha = clampf((st_t - 1.2) * 2.0, 0, 1)
 		var y0 = vs.y - 24.0 - 20.0 * (hitches.size() - 1)
+		_text(c, Vector2(20, y0 - 20), "Stutters this game: %d" % hitch_total, 14, Color(1, 0.8, 0.6, 0.8 * ha), HORIZONTAL_ALIGNMENT_LEFT, -1, font_light)
 		for i in hitches.size():
 			var h = hitches[i]
 			_text(c, Vector2(20, y0 + i * 20), "Stutter %d ms after: %s" % [h.ms, h.what], 14, Color(1, 0.8, 0.6, 0.8 * ha), HORIZONTAL_ALIGNMENT_LEFT, vs.x - 260, font_light)
@@ -1070,6 +1092,8 @@ func _start_game() -> void:
 	kills = 0
 	stage = 1
 	round_kills = 0
+	hitch_total = 0
+	hitches.clear()
 	out_t = -1.0
 	over_reason = ""
 	break_t = 0.0
@@ -1176,8 +1200,11 @@ func _process(dt: float) -> void:
 		for e in evlog:
 			if now - int(e.t) < int(dt * 1000.0) + 250:
 				ws.append(e.w)
-		hitches.append({"ms": int(dt * 1000.0), "what": ", ".join(ws) if not ws.is_empty() else "nothing logged"})
-		if hitches.size() > 4:
+		hitch_total += 1
+		var last_ago = (now - int(evlog[-1].t)) if not evlog.is_empty() else -1
+		var what = ", ".join(ws) if not ws.is_empty() else ("nothing logged (last: %s, %d ms before)" % [evlog[-1].w, last_ago] if not evlog.is_empty() else "nothing logged")
+		hitches.append({"ms": int(dt * 1000.0), "what": what})
+		if hitches.size() > 6:
 			hitches.pop_front()
 		print("HITCH ", int(dt * 1000.0), " ms after: ", hitches[-1].what)
 	dt = minf(dt, 0.05)
@@ -1412,6 +1439,7 @@ func _spawn_box(s: Dictionary, mega: bool) -> void:
 
 
 func _open_box(c: Dictionary) -> void:
+	_evt("box opened")
 	c.state = "fall"
 	c.t = 0.0
 	var title = ""
@@ -1542,6 +1570,7 @@ func _enemies_update(dt: float) -> void:
 						e.t = 0.0
 			"linger":
 				if e.t > 0.45:
+					_evt("enemy hides")
 					e.state = "hide"
 					e.t = 0.0
 			"hide":
@@ -1568,6 +1597,7 @@ func _enemies_update(dt: float) -> void:
 				if ft > 1.4:
 					gone.append(e)
 	for e in gone:
+		_evt("enemy removed")
 		e.slot.busy = false
 		e.pv.queue_free()
 		enemies.erase(e)
@@ -1872,6 +1902,7 @@ func _enemy_grenade(e: Dictionary) -> void:
 
 
 func _launch(from: Vector3, to: Vector3, dur: float, apex: float, kind: String) -> void:
+	_evt("launch " + kind)
 	var sp = Sprite3D.new()
 	if kind == "rocket":
 		sp.texture = tex_flash
@@ -2080,9 +2111,10 @@ func _fb_mat(key: String) -> ShaderMaterial:
 
 func _fb_quad(key: String, pos: Vector3, size: float) -> MeshInstance3D:
 	var mi = MeshInstance3D.new()
-	var q = QuadMesh.new()
-	q.size = Vector2(1, 1)
-	mi.mesh = q
+	if fb_mesh == null:
+		fb_mesh = QuadMesh.new()
+		fb_mesh.size = Vector2(1, 1)
+	mi.mesh = fb_mesh
 	mi.material_override = _fb_mat(key)
 	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	add_child(mi)
@@ -2096,6 +2128,7 @@ func _fb_quad(key: String, pos: Vector3, size: float) -> MeshInstance3D:
 
 
 func _fb_boom(pos: Vector3, k: float) -> void:
+	_evt("fireball")
 	var keys = ["boom0", "boom1", "boom2"]
 	keys.shuffle()
 	for i in 2:
@@ -2219,6 +2252,7 @@ func _pick(sp: Vector2, only) -> Dictionary:
 
 # ================================================================ Effekte
 func _impact(hit: Dictionary, hole: bool) -> void:
+	_evt("impact " + str(hit.card.kind))
 	var c = hit.card
 	var p: Vector3 = hit.point
 	var n: Vector3 = hit.normal
@@ -2284,10 +2318,14 @@ func _bullet_hole(c: Dictionary, lp: Vector3, kind: String) -> void:
 
 func _particles(pos: Vector3, mat: Material, size: float, amount: int, life: float) -> CPUParticles3D:
 	var p = CPUParticles3D.new()
-	var q = QuadMesh.new()
-	q.size = Vector2(size, size)
-	q.material = mat
-	p.mesh = q
+	var sz = snappedf(size, 0.005)
+	var key = "%d_%.3f" % [mat.get_instance_id(), sz]
+	if not mesh_cache.has(key):
+		var q = QuadMesh.new()
+		q.size = Vector2(sz, sz)
+		q.material = mat
+		mesh_cache[key] = q
+	p.mesh = mesh_cache[key]
 	p.amount = maxi(1, amount)
 	p.lifetime = life
 	p.one_shot = true
@@ -2456,23 +2494,35 @@ func _lights_update(dt: float) -> void:
 
 
 func _float_text(pos: Vector3, s: String, big: bool) -> void:
-	var l = Label3D.new()
+	_evt("text")
+	if label_pool.is_empty():
+		for i in 6:
+			var nl = Label3D.new()
+			nl.font = font
+			nl.font_size = 60
+			nl.outline_size = 14
+			nl.outline_modulate = Color(0, 0, 0, 0.55)
+			nl.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+			nl.no_depth_test = true
+			nl.fixed_size = false
+			nl.visible = false
+			add_child(nl)
+			label_pool.append({"l": nl, "tw": null})
+	var e = label_pool[label_next]
+	label_next = (label_next + 1) % label_pool.size()
+	if e.tw != null and e.tw.is_valid():
+		e.tw.kill()
+	var l: Label3D = e.l
 	l.text = s
-	l.font = font
-	l.font_size = 64 if big else 54
-	l.pixel_size = 0.0045 if not big else 0.0052
-	l.outline_size = 14
-	l.outline_modulate = Color(0, 0, 0, 0.55)
+	l.pixel_size = 0.0045 if not big else 0.0055
 	l.modulate = Color(1.0, 0.9, 0.55) if big else Color(1, 1, 1)
-	l.billboard = BaseMaterial3D.BILLBOARD_ENABLED
-	l.no_depth_test = true
-	l.fixed_size = false
 	l.position = pos
-	add_child(l)
+	l.visible = true
 	var tw = create_tween().set_parallel(true)
 	tw.tween_property(l, "position", pos + Vector3(0, 0.9, 0), 1.0).set_ease(Tween.EASE_OUT).set_trans(Tween.TRANS_CUBIC)
 	tw.tween_property(l, "modulate:a", 0.0, 1.0).set_delay(0.35)
-	tw.chain().tween_callback(l.queue_free)
+	tw.chain().tween_callback(func(): l.visible = false)
+	e.tw = tw
 
 
 # ================================================================ Speichern
