@@ -162,6 +162,7 @@ var warmed = false
 var break_t = 0.0           # Pause beim Rundenwechsel
 var break_reload = false
 var forcing = false
+var early_snap = false
 
 
 # ================================================================ Aufbau
@@ -958,7 +959,8 @@ func _warmup() -> void:
 		_tex(n + ".png")
 	for n in ["box.png", "box_mega.png"]:
 		_tex(n)
-	var p = Vector3(0.0, 3.0, FAC_Z - 1.6)
+	# unter der Straße: der Boden deckt alles ab, auch solange die Fassade noch flach liegt
+	var p = Vector3(0.0, -3.2, -7.0)
 	fx_k = 1.0
 	_fb_boom(p, 1.0)
 	for k in ["boom0", "boom1", "boom2", "smoke5", "smoke5_dark"]:
@@ -2566,6 +2568,9 @@ func _force_enemy(slot_name: String) -> Dictionary:
 func _autotest(dt: float) -> void:
 	at_t += dt
 	var plan = OS.get_environment("AUTOTEST")
+	if at_step == 0 and at_t > 0.35 and not early_snap:
+		early_snap = true
+		_snap("00_warmup")
 	if at_step == 0 and at_t > 1.0:
 		_snap("01_title_opening")
 		at_step = 1
