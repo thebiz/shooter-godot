@@ -72,6 +72,21 @@ var reload_t = 0.0
 var health = 100.0
 var score = 0
 var best = 0
+var mode = "easy"            # easy / hard (Kampagne) oder endless
+const MODES = ["easy", "hard", "endless"]
+const MODE_NAMES = {"easy": "EASY", "hard": "HARD", "endless": "ENDLESS"}
+const ROUNDS_PER_MAP = 4
+const CAMPAIGN_ROUNDS = 8    # zwei Maps à vier Runden (mit der dritten Map: 12)
+var hs = {"easy": [], "hard": [], "endless": []}   # Top 5 je Modus: {n, s, r}
+var hs_new = -1              # Platz des gerade eingetragenen Spielers
+var last_name = ""
+var entering = false         # Namenseingabe läuft
+var won = false
+var swap_to = "harbor"
+var name_edit: LineEdit
+var name_ok: Button
+var hide_said = false
+var last_bark = {}
 var kills = 0
 var stage = 1               # Runde der Campaign
 var reserve = 0             # Munition außerhalb des Magazins (pro Runde knapp bemessen)
@@ -690,11 +705,11 @@ func _make_sounds() -> void:
 				sounds[n] = load(p)
 				break
 	# Sprüche: voices[kategorie][stimme] = [Streams]; Stimmen A Boss, B Hitzkopf, C Brecher, D Gangsterin
-	for cat in ["appear", "fire", "hit", "taunt", "mandown"]:
+	for cat in ["appear", "fire", "hit", "taunt", "mandown", "hide", "nade"]:
 		voices[cat] = {}
 		for v in ["A", "B", "C", "D"]:
 			var arr = []
-			for i in range(1, 8):
+			for i in range(1, 13):
 				var vp = "res://sfx/voice/bark_%s_%s%d.ogg" % [cat, v, i]
 				if ResourceLoader.exists(vp):
 					arr.append(load(vp))
@@ -747,7 +762,13 @@ func _bark(e: Dictionary, cat: String, chance: float = 1.0, delay: float = 0.0, 
 		return
 	bark_cd = 0.9
 	_evt("voice " + cat)
+	# nie zweimal hintereinander derselbe Spruch
+	var key = cat + e.get("voice", "A")
 	var stream = arr[randi() % arr.size()]
+	if arr.size() > 1:
+		while stream == last_bark.get(key):
+			stream = arr[randi() % arr.size()]
+	last_bark[key] = stream
 	var go = func():
 		if not is_instance_valid(e.pv):
 			return
@@ -833,6 +854,7 @@ func _make_hud() -> void:
 	hud.set_anchors_preset(Control.PRESET_FULL_RECT)
 	hud.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	layer.add_child(hud)
+	_make_name_entry(layer)
 
 
 func _vs() -> Vector2:
@@ -1101,10 +1123,19 @@ func _hud_draw(c: Control) -> void:
 		c.draw_rect(Rect2(0, 0, vs.x, vs.y), Color(0.05, 0.03, 0.02, 0.25 * a))
 		_text(c, Vector2(0, vs.y * 0.4), "SHOOTER", 96, Color(1, 0.95, 0.86, a), HORIZONTAL_ALIGNMENT_CENTER, vs.x)
 		_text(c, Vector2(0, vs.y * 0.4 + 40), "GOLDEN HOUR SHOOTOUT", 20, Color(1, 0.86, 0.6, 0.9 * a), HORIZONTAL_ALIGNMENT_CENTER, vs.x, font_light)
-		if best > 0:
-			_text(c, Vector2(0, vs.y * 0.4 + 80), "BEST  %06d" % best, 20, Color(1, 1, 1, 0.75 * a), HORIZONTAL_ALIGNMENT_CENTER, vs.x, font_light)
-		var bl = 0.45 + 0.55 * absf(sin(st_t * 2.6))
-		_text(c, Vector2(0, vs.y * 0.74), "TAP TO START", 30, Color(1, 1, 1, bl * a), HORIZONTAL_ALIGNMENT_CENTER, vs.x)
+		# drei Modi zur Wahl, darunter jeweils der beste Eintrag
+		var subs = {"easy": "2 maps · 8 rounds", "hard": "2 maps · real challenge", "endless": "how far can you get?"}
+		for i in MODES.size():
+			var m = MODES[i]
+			var r = _mode_btn_rect(i)
+			var on = m == mode
+			_panel(c, r, 0.72 if on else 0.5)
+			if on:
+				c.draw_rect(Rect2(r.position + Vector2(14, r.size.y - 5), Vector2(r.size.x - 28, 3)), Color(1, 0.8, 0.35, 0.9 * a))
+			_text(c, Vector2(r.position.x, r.position.y + 40), MODE_NAMES[m], 30, Color(1, 0.95, 0.86, a), HORIZONTAL_ALIGNMENT_CENTER, r.size.x)
+			_text(c, Vector2(r.position.x, r.position.y + 62), subs[m], 14, Color(1, 1, 1, 0.65 * a), HORIZONTAL_ALIGNMENT_CENTER, r.size.x, font_light)
+			if not hs[m].is_empty():
+				_text(c, Vector2(r.position.x, r.end.y + 24), "BEST  %s  %06d" % [hs[m][0].n, int(hs[m][0].s)], 15, Color(1, 0.86, 0.6, 0.8 * a), HORIZONTAL_ALIGNMENT_CENTER, r.size.x, font_light)
 		_text(c, Vector2(vs.x - 220, vs.y - 18), "Build %d" % _my_build(), 14, Color(1, 1, 1, 0.5 * a), HORIZONTAL_ALIGNMENT_RIGHT, 200, font_light)
 		_upd_draw(c, a)
 	if state == "over" and st_t > 1.2 and not hitches.is_empty():
@@ -1114,10 +1145,40 @@ func _hud_draw(c: Control) -> void:
 		for i in hitches.size():
 			var h = hitches[i]
 			_text(c, Vector2(20, y0 + i * 20), "Stutter %d ms after: %s" % [h.ms, h.what], 14, Color(1, 0.8, 0.6, 0.8 * ha), HORIZONTAL_ALIGNMENT_LEFT, vs.x - 260, font_light)
-	if state == "over" and st_t > 1.2:
+	if state == "over" and entering:
+		_text(c, Vector2(0, vs.y * 0.13), "NEW HIGHSCORE  –  ENTER YOUR NAME", 22, Color(1, 0.86, 0.5, 0.95), HORIZONTAL_ALIGNMENT_CENTER, vs.x)
+	if state == "over" and st_t > 1.2 and not entering:
 		var a = clampf((st_t - 1.2) * 2.0, 0, 1)
-		_text(c, Vector2(0, vs.y * 0.62), "TAP TO PLAY AGAIN", 26, Color(1, 1, 1, a * (0.45 + 0.55 * absf(sin(st_t * 2.6)))), HORIZONTAL_ALIGNMENT_CENTER, vs.x)
+		_hs_draw(c, Vector2(vs.x * 0.5, vs.y * 0.53), a)
+		_text(c, Vector2(0, vs.y * 0.9), "TAP TO CONTINUE", 24, Color(1, 1, 1, a * (0.45 + 0.55 * absf(sin(st_t * 2.6)))), HORIZONTAL_ALIGNMENT_CENTER, vs.x)
 		_upd_draw(c, a)
+
+
+func _mode_btn_rect(i: int) -> Rect2:
+	var vs = _vs()
+	var w = 230.0
+	var gap = 22.0
+	var x0 = vs.x * 0.5 - (3.0 * w + 2.0 * gap) * 0.5
+	return Rect2(x0 + i * (w + gap), vs.y * 0.56, w, 80)
+
+
+# Top-5-Liste des gespielten Modus, der neue Eintrag leuchtet
+func _hs_draw(c: Control, top: Vector2, a: float) -> void:
+	var list: Array = hs[mode]
+	if list.is_empty():
+		return
+	var w = 420.0
+	var r = Rect2(top.x - w * 0.5, top.y, w, 34.0 + 30.0 * list.size())
+	_panel(c, r, 0.78 * a)
+	_text(c, Vector2(r.position.x, r.position.y + 24), "TOP 5  ·  " + MODE_NAMES[mode], 15, Color(1, 0.86, 0.6, 0.85 * a), HORIZONTAL_ALIGNMENT_CENTER, w, font_light)
+	for i in list.size():
+		var e = list[i]
+		var y = r.position.y + 54 + i * 30
+		var col = Color(1, 0.85, 0.4, a) if i == hs_new else Color(1, 1, 1, 0.85 * a)
+		_text(c, Vector2(r.position.x + 24, y), "%d." % (i + 1), 20, col, HORIZONTAL_ALIGNMENT_LEFT, -1, font_light)
+		_text(c, Vector2(r.position.x + 62, y), str(e.n), 20, col)
+		_text(c, Vector2(r.position.x + 230, y), "R%d" % int(e.get("r", 0)), 16, Color(col.r, col.g, col.b, col.a * 0.7), HORIZONTAL_ALIGNMENT_LEFT, -1, font_light)
+		_text(c, Vector2(r.position.x, y), "%06d" % int(e.s), 20, col, HORIZONTAL_ALIGNMENT_RIGHT, w - 24)
 
 
 func _settings_draw(c: Control) -> void:
@@ -1332,6 +1393,15 @@ func _close_book() -> void:
 		c.up = false
 
 
+func _start_mode(m: String) -> void:
+	mode = m
+	_save()
+	_back_to_street()
+	_close_book()
+	_open_book(0.35)
+	_start_game()
+
+
 func _back_to_street() -> void:
 	swap_t = -1.0
 	_nb_reset()
@@ -1357,6 +1427,9 @@ func _start_game() -> void:
 	score = 0
 	kills = 0
 	stage = 1
+	won = false
+	hs_new = -1
+	hide_said = false
 	round_kills = 0
 	hitch_total = 0
 	hitches.clear()
@@ -1384,15 +1457,22 @@ func _start_game() -> void:
 	hits = 0
 	tip_t = 7.0
 	_set_state("intro")
-	_show_msg("ROUND 1", "%d enemies  ·  %d bullets" % [round_goal, ammo + reserve], 2.4)
+	_show_msg("ROUND 1", "%s  ·  %d enemies  ·  %d bullets" % [MODE_NAMES[mode], round_goal, ammo + reserve], 2.4)
 
 
 # Runde vorbereiten: feste Gegnerzahl, knappe Munition (Gegner plus Reserve für Fehlschüsse)
+func _goal_for(st: int) -> int:
+	return 10 + (_lv_for(st) - 1) * 3 + (2 if mode == "hard" else 0)
+
+
+func _pool_for(st: int) -> int:
+	var spare = maxi(3, 6 - _lv_for(st)) + (2 if mode == "easy" else (-1 if mode == "hard" else 0))
+	return _goal_for(st) + maxi(2, spare)
+
+
 func _round_setup() -> void:
-	var lv = stage if stage < HARBOR_FROM else stage - HARBOR_FROM + 2
-	round_goal = 10 + (lv - 1) * 3
-	var spare = maxi(3, 6 - lv)
-	var pool = round_goal + spare
+	round_goal = _goal_for(stage)
+	var pool = _pool_for(stage)
 	ammo = mini(MAG, pool)
 	reserve = pool - ammo
 	round_kills = 0
@@ -1406,10 +1486,12 @@ func _round_clear() -> void:
 	var bonus = left * 50 + int(health) * 5
 	score += bonus
 	stage += 1
+	if mode != "endless" and stage > CAMPAIGN_ROUNDS:
+		_mission_complete(bonus)
+		return
 	health = minf(100.0, health + 25.0)
-	var lv = stage if stage < HARBOR_FROM else stage - HARBOR_FROM + 2
-	var goal = 10 + (lv - 1) * 3
-	var pool = goal + maxi(3, 6 - lv)
+	var goal = _goal_for(stage)
+	var pool = _pool_for(stage)
 	_show_msg("ROUND %d" % stage, "clear bonus +%d  ·  %d enemies  ·  %d bullets" % [bonus, goal, pool], 2.6)
 	# kurze Ruhe: alle verschwinden, dann hört man das Nachladen und die Waffe ist voll
 	for e in enemies:
@@ -1423,12 +1505,107 @@ func _round_clear() -> void:
 	break_reload = false
 	cover_time = 0.0
 	spawn_t = 0.6
-	# ab Runde 5 geht es in den Hafen: Straße klappt zu, Hafen klappt auf
-	if stage == HARBOR_FROM and scene == "street":
-		_show_msg("ROUND %d" % stage, "the docks  ·  %d enemies  ·  %d bullets" % [goal, pool], 4.2)
+	# alle vier Runden die nächste Map: Kulisse klappt zu, die neue klappt auf
+	var target = _scene_for(stage)
+	if target != scene:
+		swap_to = target
+		_show_msg("ROUND %d" % stage, "%s  ·  %d enemies  ·  %d bullets" % ["the docks" if target == "harbor" else "back on the street", goal, pool], 4.2)
 		break_t = 5.4
 		swap_t = 1.25
 		_close_book()
+
+
+func _mission_complete(bonus: int) -> void:
+	won = true
+	stage -= 1
+	score += 2000 + (500 if mode == "hard" else 0)
+	_game_over()
+
+
+# Top 5 je Modus: reicht die Punktzahl, fragt das Spiel nach dem Namen
+func _hs_check() -> void:
+	var list: Array = hs[mode]
+	if score <= 0 or (list.size() >= 5 and score <= int(list[-1].s)):
+		return
+	entering = true
+	get_tree().create_timer(1.3).timeout.connect(_name_prompt)
+
+
+func _name_prompt() -> void:
+	if autotest:
+		_snap("27_name_entry_pre")
+	var vs = _vs()
+	name_edit.size = Vector2(360, 64)
+	name_edit.position = Vector2(vs.x * 0.5 - 180 - 60, vs.y * 0.17)
+	name_ok.size = Vector2(110, 64)
+	name_ok.position = Vector2(vs.x * 0.5 + 190 - 60, vs.y * 0.17)
+	name_edit.text = last_name
+	name_edit.visible = true
+	name_ok.visible = true
+	name_edit.grab_focus()
+	name_edit.select_all()
+
+
+func _name_done(_t = "") -> void:
+	if not entering:
+		return
+	var n = name_edit.text.strip_edges().to_upper()
+	if n == "":
+		n = "PLAYER"
+	last_name = n
+	var list: Array = hs[mode]
+	var entry = {"n": n, "s": score, "r": stage}
+	list.append(entry)
+	list.sort_custom(func(a, b): return int(a.s) > int(b.s))
+	while list.size() > 5:
+		list.pop_back()
+	hs_new = list.find(entry)
+	entering = false
+	name_edit.release_focus()
+	name_edit.visible = false
+	name_ok.visible = false
+	DisplayServer.virtual_keyboard_hide()
+	st_t = maxf(st_t, 1.2)
+	_save()
+
+
+func _make_name_entry(layer: CanvasLayer) -> void:
+	name_edit = LineEdit.new()
+	name_edit.max_length = 12
+	name_edit.placeholder_text = "YOUR NAME"
+	name_edit.alignment = HORIZONTAL_ALIGNMENT_CENTER
+	name_edit.add_theme_font_override("font", font)
+	name_edit.add_theme_font_size_override("font_size", 30)
+	var sb = StyleBoxFlat.new()
+	sb.bg_color = Color(0.06, 0.05, 0.05, 0.85)
+	sb.border_color = Color(1, 0.85, 0.4, 0.8)
+	sb.set_border_width_all(2)
+	sb.set_corner_radius_all(12)
+	name_edit.add_theme_stylebox_override("normal", sb)
+	name_edit.add_theme_stylebox_override("focus", sb)
+	name_edit.virtual_keyboard_type = LineEdit.KEYBOARD_TYPE_DEFAULT
+	name_edit.text_submitted.connect(_name_done)
+	name_edit.text_changed.connect(func(t):
+		var up = t.to_upper()
+		if up != t:
+			var cpos = name_edit.caret_column
+			name_edit.text = up
+			name_edit.caret_column = cpos)
+	name_edit.visible = false
+	layer.add_child(name_edit)
+	name_ok = Button.new()
+	name_ok.text = "OK"
+	name_ok.add_theme_font_override("font", font)
+	name_ok.add_theme_font_size_override("font_size", 28)
+	var bs = sb.duplicate()
+	bs.bg_color = Color(1, 0.78, 0.3, 0.95)
+	name_ok.add_theme_stylebox_override("normal", bs)
+	name_ok.add_theme_stylebox_override("hover", bs)
+	name_ok.add_theme_stylebox_override("pressed", bs)
+	name_ok.add_theme_color_override("font_color", Color(0.1, 0.07, 0.03))
+	name_ok.pressed.connect(func(): _name_done())
+	name_ok.visible = false
+	layer.add_child(name_ok)
 
 
 func _game_over() -> void:
@@ -1440,14 +1617,17 @@ func _game_over() -> void:
 			pr.n.queue_free()
 	projs.clear()
 	cover = false
-	var newbest = score > best
-	if newbest:
+	if score > best:
 		best = score
 		_save()
 	var acc = 0
 	if shots_fired > 0:
 		acc = roundi(100.0 * hits / shots_fired)
-	_show_msg(over_reason if over_reason != "" else "GAME OVER", ("NEW BEST  %06d" % score) if newbest else ("SCORE %06d  ·  BEST %06d  ·  ACCURACY %d%%" % [score, best, acc]), 999.0)
+	if won:
+		_show_msg("MISSION COMPLETE", "%s  ·  SCORE %06d  ·  ACCURACY %d%%" % [MODE_NAMES[mode], score, acc], 999.0)
+	else:
+		_show_msg(over_reason if over_reason != "" else "GAME OVER", "%s  ·  ROUND %d  ·  SCORE %06d  ·  ACCURACY %d%%" % [MODE_NAMES[mode], stage, score, acc], 999.0)
+	_hs_check()
 	for e in enemies:
 		if e.state != "fall":
 			e.state = "hide"
@@ -1567,7 +1747,7 @@ func _play_update(dt: float) -> void:
 					if is_instance_valid(f.n):
 						f.n.queue_free()
 				fbs.clear()
-				_use_scene("harbor")
+				_use_scene(swap_to)
 				for c in cards:
 					c.t = -10.0
 				_open_book(0.15)
@@ -1602,8 +1782,15 @@ func _play_update(dt: float) -> void:
 	if not _frozen():
 		if cover:
 			cover_time += dt
+			if cover_time > 2.2 and not hide_said:
+				hide_said = true
+				for e in enemies:
+					if not e.get("box", false) and (e.state == "aim" or e.state == "linger"):
+						_bark(e, "hide", 0.8, 0.0, true)
+						break
 		else:
 			cover_time = maxf(0.0, cover_time - dt * 2.0)
+			hide_said = false
 		if cover_time > nade_limit:
 			var thrower = {}
 			for e in enemies:
@@ -1652,11 +1839,27 @@ func _play_update(dt: float) -> void:
 
 # Schwierigkeit: im Hafen fängt es wieder ruhiger an (Runde 5 spielt sich wie Runde 2 auf der Straße)
 func _lvl() -> int:
-	return stage if scene == "street" else stage - HARBOR_FROM + 2
+	return _lv_for(stage)
+
+
+# Kampagne: jede Map startet etwas leichter (Map 2 beginnt wie Runde 2); endlos: steigt immer weiter
+func _lv_for(st: int) -> int:
+	if mode == "endless":
+		return st
+	var map_i = (st - 1) / ROUNDS_PER_MAP
+	return (st - 1) % ROUNDS_PER_MAP + 1 + map_i
+
+
+func _scene_for(st: int) -> String:
+	return "street" if ((st - 1) / ROUNDS_PER_MAP) % 2 == 0 else "harbor"
+
+
+func _dk(easy: float, hard: float) -> float:
+	return easy if mode == "easy" else (hard if mode == "hard" else 1.0)
 
 
 func _diff_aim() -> float:
-	return maxf(0.75, 1.75 - (_lvl() - 1) * 0.15 - round_kills * 0.015)
+	return maxf(0.75, 1.75 - (_lvl() - 1) * 0.15 - round_kills * 0.015) * _dk(1.3, 0.85)
 
 
 func _spawn() -> void:
@@ -1913,9 +2116,9 @@ func _enemy_fire(e: Dictionary) -> void:
 	_flash(mp + Vector3(0, 0, 0.15), 0.9, Color(1.0, 0.7, 0.35), 7.0)
 	_smoke(mp, 4)
 	_sfx("shot_enemy", -2.0, 0.1)
-	var acc = minf(0.7, 0.38 + _lvl() * 0.05)
+	var acc = minf(0.75, (0.38 + _lvl() * 0.05) * _dk(0.75, 1.12))
 	if not cover and cover_k < 0.5 and randf() < acc:
-		health -= randf_range(9.0, 14.0)
+		health -= randf_range(9.0, 14.0) * _dk(0.7, 1.15)
 		hurt = 0.85
 		shake = 0.7
 		_sfx("player_hit", 0.0, 0.04)
@@ -2050,20 +2253,25 @@ func _press(p: Vector2, idx: int = 0) -> void:
 			if _upd_btn_rect().has_point(p) and upd_url != "" and upd_build > _my_build():
 				OS.shell_open(upd_url)
 				return
-			_back_to_street()
-			_close_book()
-			_open_book(0.35)
-			_start_game()
+			for i in MODES.size():
+				if _mode_btn_rect(i).grow(10).has_point(p):
+					_start_mode(MODES[i])
+					return
 		"over":
 			if st_t < 1.2:
+				return
+			if entering:
 				return
 			if _upd_btn_rect().has_point(p) and upd_url != "" and upd_build > _my_build():
 				OS.shell_open(upd_url)
 				return
-			_back_to_street()
-			_close_book()
-			_open_book(0.45)
-			_start_game()
+			# zurück ins Hauptmenü (Modus wählen)
+			if scene != "street":
+				_back_to_street()
+				_close_book()
+				_open_book(0.2)
+			msg_t = 0.0
+			_set_state("title")
 		"play":
 			if _ui_press(p, idx):
 				return
@@ -2223,7 +2431,7 @@ func _enemy_grenade(e: Dictionary) -> void:
 	var from: Vector3 = e.mi.global_transform * Vector3(0, e.h * 0.8, 0.1)
 	var tp = Vector3(cam.global_position.x + randf_range(-0.3, 0.3), 0.35, -0.55)
 	_launch(from, tp, 1.9, 4.2, "enade")
-	_bark(e, "fire", 1.0, 0.0, true)
+	_bark(e, "nade", 1.0, 0.0, true)
 	_sfx("throw", -2.0, 0.08)
 	_sfx("warn", 2.0, 0.0)
 	_show_msg("GRENADE!", "pop up and shoot it", 1.4)
@@ -2291,7 +2499,7 @@ func _explode(pos: Vector3, radius: float, hurts_player: bool, snd: String = "bo
 	_sfx(snd, 2.0 if dcam > 4.0 else 4.0, 0.06)
 	shake = maxf(shake, clampf(1.5 - dcam / 14.0, 0.35, 1.3))
 	if hurts_player:
-		health -= 35.0
+		health -= 35.0 * _dk(0.7, 1.15)
 		hurt = 1.0
 		_sfx("player_hit", 0.0, 0.04)
 		if not autotest:
@@ -2880,6 +3088,10 @@ func _load_save() -> void:
 	var c = ConfigFile.new()
 	if c.load(SAVE_PATH) == OK:
 		best = int(c.get_value("game", "best", 0))
+		mode = str(c.get_value("game", "mode", mode))
+		last_name = str(c.get_value("game", "name", ""))
+		for m in MODES:
+			hs[m] = c.get_value("hs", m, [])
 		aim_sens = float(c.get_value("ctrl", "aim_sens", aim_sens))
 		aim_accel = float(c.get_value("ctrl", "aim_accel", aim_accel))
 		recenter = float(c.get_value("ctrl", "recenter", recenter))
@@ -2895,6 +3107,10 @@ func _save() -> void:
 		return
 	var c = ConfigFile.new()
 	c.set_value("game", "best", best)
+	c.set_value("game", "mode", mode)
+	c.set_value("game", "name", last_name)
+	for m in MODES:
+		c.set_value("hs", m, hs[m])
 	c.set_value("ctrl", "aim_sens", aim_sens)
 	c.set_value("ctrl", "aim_accel", aim_accel)
 	c.set_value("ctrl", "recenter", recenter)
@@ -2976,7 +3192,7 @@ func _autotest(dt: float) -> void:
 		at_step = 1
 	elif at_step == 1 and at_t > 3.0:
 		_snap("02_title")
-		_press(_vs() * 0.5)
+		_press(_mode_btn_rect(0).get_center())
 		at_step = 2
 	elif at_step == 2 and at_t > 4.0:
 		_snap("03_intro")
@@ -3234,6 +3450,18 @@ func _autotest(dt: float) -> void:
 		at_step = 13
 	elif at_step == 13 and at_t > 39.6:
 		_snap("09_game_over")
+		at_step = 14
+	elif at_step == 14 and at_t > 41.0:
+		_snap("27_name_entry")
+		name_edit.text = "JOHN"
+		_name_done()
+		at_step = 15
+	elif at_step == 15 and at_t > 41.8:
+		_snap("28_highscores")
+		_press(_vs() * 0.5)
+		at_step = 16
+	elif at_step == 16 and at_t > 43.0:
+		_snap("29_menu")
 		get_tree().quit()
 
 
@@ -3687,7 +3915,7 @@ func _nb_hit(pt: Vector3) -> void:
 	score = maxi(0, score - 100)
 	_float_text(bp + Vector3(0.2, 0.35, 0.9), "MY BEER!  -100", true)
 	var line = "nb_beer%d" % (randi() % 3)
-	nb.stay = maxf(nb.stay, nb.t + nb_snd[line].get_length() + 1.0)
+	nb.stay = nb.t + 1.5   # schimpft noch kurz und verschwindet dann (der Spruch läuft weiter)
 	get_tree().create_timer(0.45).timeout.connect(func(): _nb_say(line))
 
 
