@@ -155,6 +155,8 @@ var shreds = []             # fliegende Pappfetzen
 var shred_mats = {}
 var shred_shader: Shader
 var mflash = 0.0            # Mündungsfeuer im HUD
+var shadows = []            # weiche Bodenschatten {mi, node, k, off}
+var shadow_mat: ShaderMaterial
 var kick_side = 0.0
 const HARBOR_FROM = 5
 const M_TEX = ["m_motel.png", "m_cop.png", "m_cop2.png", "m_pickup.png", "m_trash.png", "m_sign.png", "m_cover.png", "m_sky.jpg", "m_ground.jpg", "m_deb_tire.png", "m_deb_mirror.png", "m_deb_light.png"]
@@ -551,6 +553,11 @@ func _make_world() -> void:
 			sl.partner = "crates"
 	slots.append({"pos": Vector3(4.25, 0.28, -8.75), "mode": "flip", "busy": false, "name": "car", "box_lift": 1.02, "eh": ENEMY_H_FRONT})
 	var street_deco = _make_street_life(fac, fac_h, tree)
+	_shadow(car, 1.15, 1.5, 0.6)
+	_shadow(crates, 1.05, 1.4, 0.55)
+	_shadow(tree, 0.45, 2.2, 0.35)
+	_shadow(hedge, 1.05, 1.0, 0.45)
+	_shadow(lamp, 0.35, 0.5, 0.4)
 	scenes["street"] = {"deco": street_deco, "cards": cards, "slots": slots, "wall": wall, "car": car_card, "sky": street_sky,
 		"bg": Color(0.86, 0.6, 0.38), "amb": "ambience"}
 	_make_harbor()
@@ -674,6 +681,12 @@ func _make_harbor() -> void:
 		if sl.name == "door_br":
 			sl.partner = "car"
 	var harbor_deco = _make_harbor_life(sky.pv)
+	_shadow(truck, 1.05, 2.0, 0.6)
+	_shadow(fork, 1.1, 1.4, 0.6)
+	_shadow(pal, 1.05, 1.4, 0.55)
+	_shadow(prop, 1.0, 1.3, 0.55)
+	_shadow(mast, 0.4, 0.6, 0.45)
+	_shadow(ct, 1.0, 1.6, 0.5)
 	scenes["harbor"] = {"deco": harbor_deco, "cards": cards, "slots": slots, "wall": cov, "car": fork, "sky": sky.pv,
 		"bg": Color(0.05, 0.07, 0.11), "amb": "ambience_harbor"}
 
@@ -1735,6 +1748,7 @@ func _process(dt: float) -> void:
 	_lights_update(dt)
 	_life_update(dt)
 	_shreds_update(dt)
+	_shadows_update()
 	_car_burn(dt)
 	_camera_update(dt)
 	if autotest:
@@ -1891,6 +1905,8 @@ func _spawn() -> void:
 	var eh: float = s.get("eh", ENEMY_H)
 	var w = eh * tex.get_width() / float(tex.get_height())
 	var c = _card(ENEMY_TEX[ti] + ".png", w, s.pos, "card", eh)
+	if s.pos.y < 0.45:
+		_shadow(c, 0.75, 0.9, 0.5)
 	if scene == "harbor":
 		c.mat.set_shader_parameter("dim", 0.8)
 	c.merge({"slot": s, "state": "appear", "t": -0.3 if (scene == "street" and s.name == "door" and not door_open) else 0.0, "aim": _diff_aim() * randf_range(0.85, 1.2), "shots": 1 + (1 if _lvl() >= 2 and randf() < 0.35 else 0), "gun_v": GUN_V[ti], "mode": s.mode, "seen": 0.0, "side": -1.0 if randf() < 0.5 else 1.0, "voice": ["A", "B", "C", "D"][randi() % 4]}, true)
@@ -2553,11 +2569,11 @@ func _car_explode() -> void:
 	var tw = create_tween()
 	tw.tween_property(pv, "position", base + Vector3(0.15, 1.5, -0.2), 0.32).set_ease(Tween.EASE_OUT).set_trans(Tween.TRANS_QUAD)
 	tw.parallel().tween_property(pv, "rotation", Vector3(-0.35, 0.2, 0.28), 0.32)
-	tw.tween_property(pv, "position", base + Vector3(0.25, -0.16, -0.3), 0.3).set_ease(Tween.EASE_IN).set_trans(Tween.TRANS_QUAD)
-	tw.parallel().tween_property(pv, "rotation", Vector3(-0.1, 0.16, -0.09), 0.3)
+	tw.tween_property(pv, "position", base + Vector3(0.25, -0.03, -0.3), 0.3).set_ease(Tween.EASE_IN).set_trans(Tween.TRANS_QUAD)
+	tw.parallel().tween_property(pv, "rotation", Vector3(-0.06, 0.05, -0.05), 0.3)
 	tw.tween_callback(func(): _sfx("target_down", 3.0, 0.0))
-	tw.tween_property(pv, "position", base + Vector3(0.25, -0.05, -0.3), 0.08)
-	tw.tween_property(pv, "position", base + Vector3(0.25, -0.14, -0.3), 0.1)
+	tw.tween_property(pv, "position", base + Vector3(0.25, 0.08, -0.3), 0.08)
+	tw.tween_property(pv, "position", base + Vector3(0.25, -0.01, -0.3), 0.1)
 	# Trümmerteile fliegen weg und bleiben liegen: Stoßstange, Reifen, Spiegel
 	for pt in car_card.get("debris", []):
 		var d = _card(pt[0], pt[1], base + Vector3(0, 0.6, 0), "metal")
@@ -3470,6 +3486,10 @@ func _autotest(dt: float) -> void:
 		_snap("30_motel_unfold")
 		at_step = 171
 	elif at_step == 171 and at_t > 43.0:
+		var vv = 0
+		for sd in shadows:
+			if sd.mi.visible: vv += 1
+		print("SHADOWS ", shadows.size(), " vis=", vv, " first=", shadows[0].mi.global_position if shadows.size() > 0 else null, " k=", shadows[0].mi.get_instance_shader_parameter("k") if shadows.size() > 0 else 0)
 		print("MOTEL scene=", scene, " stage=", stage, " slots=", slots.size(), " goal=", round_goal)
 		spawn_t = 999.0
 		cover = false
@@ -4382,6 +4402,12 @@ func _make_motel() -> void:
 	# vorne seitlich an der Motorhaube des Pickups, gut sichtbar
 	slots.append({"pos": Vector3(2.05, 0.0, -8.7), "mode": "flip", "busy": false, "name": "car", "box_lift": 0.0, "eh": ENEMY_H_FRONT})
 	var deco = _make_motel_life(mo, mh, sink, sign)
+	_shadow(cop, 1.05, 2.2, 0.62)
+	_shadow(cop2, 1.05, 2.2, 0.62)
+	_shadow(pk, 1.05, 2.0, 0.62)
+	_shadow(tr, 1.02, 1.5, 0.58)
+	_shadow(sign, 0.25, 0.5, 0.4)
+	_shadow(mo, 1.0, 1.4, 0.45)
 	scenes["motel"] = {"deco": deco, "cards": cards, "slots": slots, "wall": cov, "car": pk, "sky": sky.pv,
 		"bg": Color(0.3, 0.18, 0.2), "amb": "ambience_motel"}
 
@@ -4485,3 +4511,66 @@ func _megaphone(i: int, delay: float) -> void:
 			return
 		mega_player.stream = st
 		mega_player.play())
+
+
+
+# ---------------------------------------------------------------------------
+# Weiche Bodenschatten unter Fahrzeugen, Kisten und Gegnern, die auf dem Boden stehen.
+# Folgen ihrer Karte (Wrack, Gegner) und blenden aus, solange die Karte flach liegt (Aufklappen, Umfallen).
+
+func _shadow(c: Dictionary, wk: float, depth: float, alpha: float) -> void:
+	if shadow_mat == null:
+		var sh = Shader.new()
+		sh.code = """
+shader_type spatial;
+render_mode unshaded, blend_mix, depth_draw_never, cull_disabled, shadows_disabled;
+uniform sampler2D tex : filter_linear_mipmap;
+instance uniform float k = 0.5;
+void fragment() {
+	float a = texture(tex, UV).a;
+	ALBEDO = vec3(0.03, 0.02, 0.02);
+	ALPHA = a * k;
+}
+"""
+		shadow_mat = ShaderMaterial.new()
+		shadow_mat.shader = sh
+		var img = Image.create(64, 64, false, Image.FORMAT_RGBA8)
+		for y in 64:
+			for x in 64:
+				var d = Vector2(x + 0.5 - 32.0, y + 0.5 - 32.0).length() / 32.0
+				var a = 1.0 - smoothstep(0.35, 1.0, d)
+				img.set_pixel(x, y, Color(1, 1, 1, a))
+		img.generate_mipmaps()
+		shadow_mat.set_shader_parameter("tex", ImageTexture.create_from_image(img))
+	var mi = MeshInstance3D.new()
+	var q = QuadMesh.new()
+	q.size = Vector2(c.w * wk, depth)
+	q.orientation = PlaneMesh.FACE_Y
+	mi.mesh = q
+	mi.material_override = shadow_mat
+	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	mi.sorting_offset = -1.0
+	add_child(mi)
+	shadows.append({"mi": mi, "node": c.pv, "k": alpha, "off": Vector3(0, 0, depth * 0.32)})
+	_shadow_place(shadows[-1])
+
+
+func _shadow_place(sd: Dictionary) -> void:
+	var n: Node3D = sd.node
+	var p: Vector3 = n.global_position + sd.off
+	sd.mi.global_position = Vector3(p.x, 0.014, p.z)
+	sd.mi.global_rotation = Vector3(0, n.global_rotation.y, 0)
+	var up = clampf(n.global_basis.y.normalized().y, 0.0, 1.0)
+	var vis = n.is_visible_in_tree()
+	sd.mi.visible = vis and up > 0.05
+	sd.mi.set_instance_shader_parameter("k", minf(0.85, sd.k * 1.3) * up * up)
+
+
+func _shadows_update() -> void:
+	for i in range(shadows.size() - 1, -1, -1):
+		var sd = shadows[i]
+		if not is_instance_valid(sd.node) or sd.node.is_queued_for_deletion():
+			sd.mi.queue_free()
+			shadows.remove_at(i)
+			continue
+		_shadow_place(sd)
