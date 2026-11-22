@@ -129,6 +129,13 @@ var nb = {}                 # der genervte Nachbar
 var nb_door: Node3D         # Haustür (Scharnier)
 var nb_card = {}
 var nb_snd = {}
+var door_open = false       # Haustür steht offen (Gegner oder Nachbar in der Tür)
+var door_t = 0.0
+var shreds = []             # fliegende Pappfetzen
+var shred_mats = {}
+var shred_shader: Shader
+var mflash = 0.0            # Mündungsfeuer im HUD
+var kick_side = 0.0
 const HARBOR_FROM = 5
 const H_TEX = ["h_stack.png", "h_stack_back.png", "h_prop.png", "h_crane.png", "h_load.png", "h_truck.png", "h_mast.png", "h_forklift.png", "h_pallets.png", "h_cover.png", "h_sky.jpg", "h_ground.jpg", "h_deb_tire.png", "h_deb_tank.png", "h_deb_lamp.png",
 	"door_leaf.png", "curtain.png", "neighbor0.png", "neighbor1.png", "paper.png", "birds.png"]
@@ -230,6 +237,9 @@ uniform float sway = 0.0;      // Baum wiegt sich (oben), Gardine weht (unten)
 uniform float hang = 0.0;
 uniform float sway_speed = 1.0;
 uniform bool back_tex = false; // Rückseite zeigt das gespiegelte Bild (Tür)
+uniform vec4 holes[16];        // Einschusslöcher in der Pappe: uv, Radius, Zufall
+uniform int nholes = 0;
+uniform float aspect = 0.5;
 void vertex() {
 	if (sway > 0.0) {
 		float k = mix(pow(1.0 - UV.y, 1.6), pow(UV.y, 1.2), hang);
@@ -242,6 +252,19 @@ void vertex() {
 void fragment() {
 	vec4 c = texture(tex, back_tex && !FRONT_FACING ? vec2(1.0 - UV.x, UV.y) : UV);
 	vec3 col = c.rgb;
+	float alpha = c.a;
+	float torn = 0.0;
+	for (int i = 0; i < nholes; i++) {
+		vec2 d = (UV - holes[i].xy) * vec2(aspect, 1.0);
+		float L = length(d);
+		float ang = atan(d.y, d.x);
+		float r = holes[i].z * (1.0 + 0.3 * sin(ang * 5.0 + holes[i].w * 7.0) + 0.17 * sin(ang * 11.0 + holes[i].w * 3.0) + 0.09 * sin(ang * 23.0 + holes[i].w));
+		if (L < r) {
+			alpha = 0.0;
+		} else if (L < r * 1.32) {
+			torn = max(torn, 1.0 - (L - r) / (r * 0.32));
+		}
+	}
 	if (back_tex && !FRONT_FACING) {
 		col *= 0.72;
 	} else if (!FRONT_FACING) {
@@ -249,8 +272,9 @@ void fragment() {
 		float r = fract(UV.x * 90.0);
 		col = back_col * (0.86 + 0.14 * smoothstep(0.3, 0.5, r) * smoothstep(0.9, 0.7, r));
 	}
+	col = mix(col, vec3(0.7, 0.58, 0.42), torn * 0.9);
 	ALBEDO = col * dim;
-	ALPHA = c.a;
+	ALPHA = alpha;
 	ROUGHNESS = 1.0;
 	EMISSION = col * flash;
 }
@@ -547,24 +571,27 @@ func _make_harbor() -> void:
 	var gm = ShaderMaterial.new()
 	gm.shader = ground_shader
 	gm.set_shader_parameter("tex", load("res://art/h_ground.jpg"))
-	gm.set_shader_parameter("rep", 2.6)
+	gm.set_shader_parameter("rep", 3.4)
 	var gq = QuadMesh.new()
-	gq.size = Vector2(46.0, 15.0)
-	gq.center_offset = Vector3(0, 15.0 * 0.5, 0)
+	gq.size = Vector2(60.0, 24.0)
+	gq.center_offset = Vector3(0, 24.0 * 0.5, 0)
 	var gi = MeshInstance3D.new()
 	gi.mesh = gq
 	gi.material_override = gm
 	var gp = Node3D.new()
-	gp.position = Vector3(0, 0, FAC_Z + 15.0)
+	gp.position = Vector3(0, 0, FAC_Z + 15.0)  # reicht 9 m hinter den Stapel
 	gp.rotation.x = -PI * 0.5
 	add_child(gp)
 	gp.add_child(gi)
-	cards.append({"pv": gp, "mi": gi, "mat": gm, "img": null, "w": 46.0, "h": 15.0, "kind": "ground", "t": 99.0, "delay": 0.0, "up": true, "static": true})
+	cards.append({"pv": gp, "mi": gi, "mat": gm, "img": null, "w": 60.0, "h": 24.0, "kind": "ground", "t": 99.0, "delay": 0.0, "up": true, "static": true})
 	# versetzter Containerstapel, Türen offen; dahinter die Innenräume (perspektivisch passend vergrößert)
 	var ct = _card("h_stack.png", H_W, Vector3(H_X, FAC_Y, FAC_Z), "metal")
 	ct.delay = 0.0
 	cards.append(ct)
 	var ch: float = ct.h
+	# im Bild ist unter den Containern noch Rand: Karte so weit absenken, dass sie auf dem Boden stehen
+	var sink = (1.0 - 826.0 / 887.0) * ch
+	ct.pv.position.y -= sink
 	var f = (13.0 + 1.0) / 13.0
 	var bk = _card("h_stack_back.png", H_W * f, Vector3.ZERO, "room")
 	_adopt(ct.pv, bk.pv, Vector3(H_X * f - H_X, CAM_UP.y + (FAC_Y - CAM_UP.y) * f - FAC_Y, -1.0))
@@ -597,10 +624,10 @@ func _make_harbor() -> void:
 	for n in S_HOLES:
 		var hh = S_HOLES[n]
 		var x = H_X + ((hh[0] + hh[1]) * 0.5 - 0.5) * H_W
-		var ybot = FAC_Y + (1.0 - hh[3]) * ch
+		var ybot = FAC_Y - sink + (1.0 - hh[3]) * ch
 		slots.append({"pos": Vector3(x, ybot - 0.03, FAC_Z - 0.5), "mode": "flip", "busy": false, "name": n})
 	# oben auf dem mittleren Container, hinter der Schiffsschraube, hinter den Paletten, hinter dem Gabelstapler
-	slots.append({"pos": Vector3(H_X, FAC_Y + (1.0 - 0.058) * ch - 0.04, FAC_Z - 0.35), "mode": "flip", "busy": false, "name": "roof"})
+	slots.append({"pos": Vector3(H_X, FAC_Y - sink + (1.0 - 0.058) * ch - 0.04, FAC_Z - 0.35), "mode": "flip", "busy": false, "name": "roof"})
 	slots.append({"pos": Vector3(0.55, 0.0, -10.4), "mode": "flip", "busy": false, "name": "prop"})
 	slots.append({"pos": Vector3(-2.95, 0.3, -7.4), "mode": "flip", "busy": false, "name": "crates"})
 	# Gabelstapler-Spot liegt aus Spielersicht vor der rechten unteren Containertür: nie beide gleichzeitig
@@ -925,6 +952,18 @@ func _hud_draw(c: Control) -> void:
 				var col = Color(1.0, 0.2, 0.12, 0.35 + 0.55 * k)
 				c.draw_arc(sp, r, 0, TAU, 40, col, 3.0, true)
 				c.draw_arc(sp, r * 0.55, 0, TAU, 30, Color(col.r, col.g, col.b, col.a * 0.6), 2.0, true)
+		# Mündungsfeuer: heller, warmer Blitz von rechts unten (dort, wo die Waffe wäre)
+		if mflash > 0.0 and not cover:
+			var fo = Vector2(vs.x * 0.74, vs.y * 1.04)
+			var fk = minf(mflash, 1.0)
+			for i in 5:
+				var rr = (60.0 + i * 55.0) * (0.8 + 0.2 * mflash)
+				c.draw_circle(fo, rr, Color(1.0, 0.72 - i * 0.06, 0.35 - i * 0.05, 0.16 * fk * (1.0 - i * 0.16)))
+			var dirv = (aim - fo).normalized()
+			for i in 6:
+				var a = dirv.angle() + randf_range(-0.6, 0.6)
+				var ln = randf_range(70.0, 170.0) * mflash
+				c.draw_line(fo, fo + Vector2.from_angle(a) * ln, Color(1.0, 0.85, 0.55, 0.35 * fk), randf_range(6.0, 14.0), true)
 		# Fadenkreuz
 		if not cover:
 			var p = aim + Vector2(0, -kick * 26.0)
@@ -1317,8 +1356,9 @@ func _start_game() -> void:
 
 # Runde vorbereiten: feste Gegnerzahl, knappe Munition (Gegner plus Reserve für Fehlschüsse)
 func _round_setup() -> void:
-	round_goal = 10 + (stage - 1) * 3
-	var spare = maxi(3, 6 - stage)
+	var lv = stage if stage < HARBOR_FROM else stage - HARBOR_FROM + 2
+	round_goal = 10 + (lv - 1) * 3
+	var spare = maxi(3, 6 - lv)
 	var pool = round_goal + spare
 	ammo = mini(MAG, pool)
 	reserve = pool - ammo
@@ -1334,8 +1374,9 @@ func _round_clear() -> void:
 	score += bonus
 	stage += 1
 	health = minf(100.0, health + 25.0)
-	var goal = 10 + (stage - 1) * 3
-	var pool = goal + maxi(3, 6 - stage)
+	var lv = stage if stage < HARBOR_FROM else stage - HARBOR_FROM + 2
+	var goal = 10 + (lv - 1) * 3
+	var pool = goal + maxi(3, 6 - lv)
 	_show_msg("ROUND %d" % stage, "clear bonus +%d  ·  %d enemies  ·  %d bullets" % [bonus, goal, pool], 2.6)
 	# kurze Ruhe: alle verschwinden, dann hört man das Nachladen und die Waffe ist voll
 	for e in enemies:
@@ -1414,6 +1455,7 @@ func _process(dt: float) -> void:
 	tip_t = maxf(0.0, tip_t - dt)
 	bark_cd = maxf(0.0, bark_cd - dt)
 	kick = maxf(0.0, kick - dt * 6.0)
+	mflash = maxf(0.0, mflash - dt * 13.0)
 	shake = maxf(0.0, shake - dt * 3.0)
 	hurt = maxf(0.0, hurt - dt * 1.6)
 	hit_mark = maxf(0.0, hit_mark - dt * 3.0)
@@ -1470,6 +1512,7 @@ func _process(dt: float) -> void:
 	_fb_update(dt)
 	_lights_update(dt)
 	_life_update(dt)
+	_shreds_update(dt)
 	_car_burn(dt)
 	_camera_update(dt)
 	if autotest:
@@ -1542,23 +1585,23 @@ func _play_update(dt: float) -> void:
 			if not thrower.is_empty() and not flying:
 				_enemy_grenade(thrower)
 				cover_time = 0.0
-				nade_limit = maxf(2.6, randf_range(3.6, 5.0) - stage * 0.2)
+				nade_limit = maxf(2.6, randf_range(3.6, 5.0) - _lvl() * 0.2)
 	# Gegner nachschicken
 	var alive = 0
 	for e in enemies:
 		if e.state != "fall" and not e.get("box", false):
 			alive += 1
 	var max_alive = 1
-	if round_kills >= 4 or stage >= 2:
+	if round_kills >= 4 or _lvl() >= 2:
 		max_alive = 2
-	if stage >= 3:
+	if _lvl() >= 3 and round_kills >= 3:
 		max_alive = 3
 	if _frozen():
 		return
 	spawn_t -= dt
 	if spawn_t <= 0 and alive < max_alive:
 		_spawn()
-		var base = maxf(0.6, 1.9 - stage * 0.25)
+		var base = maxf(0.6, 1.9 - _lvl() * 0.25)
 		spawn_t = base * randf_range(0.6, 1.25)
 	if ammo + reserve <= 0 and weapon == "pistol" and grenades <= 0:
 		if out_t < 0.0:
@@ -1575,8 +1618,13 @@ func _play_update(dt: float) -> void:
 		_game_over()
 
 
+# Schwierigkeit: im Hafen fängt es wieder ruhiger an (Runde 5 spielt sich wie Runde 2 auf der Straße)
+func _lvl() -> int:
+	return stage if scene == "street" else stage - HARBOR_FROM + 2
+
+
 func _diff_aim() -> float:
-	return maxf(0.75, 1.75 - (stage - 1) * 0.15 - round_kills * 0.015)
+	return maxf(0.75, 1.75 - (_lvl() - 1) * 0.15 - round_kills * 0.015)
 
 
 func _spawn() -> void:
@@ -1602,7 +1650,7 @@ func _spawn() -> void:
 	var c = _card(ENEMY_TEX[ti] + ".png", w, s.pos, "card", ENEMY_H)
 	if scene == "harbor":
 		c.mat.set_shader_parameter("dim", 0.8)
-	c.merge({"slot": s, "state": "appear", "t": 0.0, "aim": _diff_aim() * randf_range(0.85, 1.2), "shots": 1 + (1 if stage >= 2 and randf() < 0.35 else 0), "gun_v": GUN_V[ti], "mode": s.mode, "seen": 0.0, "side": -1.0 if randf() < 0.5 else 1.0, "voice": ["A", "B", "C", "D"][randi() % 4]}, true)
+	c.merge({"slot": s, "state": "appear", "t": -0.3 if (scene == "street" and s.name == "door" and not door_open) else 0.0, "aim": _diff_aim() * randf_range(0.85, 1.2), "shots": 1 + (1 if _lvl() >= 2 and randf() < 0.35 else 0), "gun_v": GUN_V[ti], "mode": s.mode, "seen": 0.0, "side": -1.0 if randf() < 0.5 else 1.0, "voice": ["A", "B", "C", "D"][randi() % 4]}, true)
 	_enemy_pose(c, 0.0)
 	enemies.append(c)
 	_sfx("target_up", -6.0, 0.12)
@@ -1757,7 +1805,7 @@ func _enemies_update(dt: float) -> void:
 		e.t += dt
 		match e.state:
 			"appear":
-				var k = _pop(e.t * 1.3)
+				var k = _pop(maxf(e.t, 0.0) * 1.3)
 				_enemy_pose(e, k)
 				if e.t > 0.55:
 					e.state = "aim"
@@ -1830,7 +1878,7 @@ func _enemy_fire(e: Dictionary) -> void:
 	_flash(mp + Vector3(0, 0, 0.15), 0.9, Color(1.0, 0.7, 0.35), 7.0)
 	_smoke(mp, 4)
 	_sfx("shot_enemy", -2.0, 0.1)
-	var acc = minf(0.7, 0.38 + stage * 0.05)
+	var acc = minf(0.7, 0.38 + _lvl() * 0.05)
 	if not cover and cover_k < 0.5 and randf() < acc:
 		health -= randf_range(9.0, 14.0)
 		hurt = 0.85
@@ -1904,7 +1952,8 @@ func _camera_update(dt: float) -> void:
 		pitch = lerpf(pitch, CAM_INTRO_PITCH, ik)
 		yaw = lerpf(yaw, -sin(tt * 0.25) * 3.0, ik)
 	# Rückstoß und Erschütterung
-	pitch += kick * 1.6
+	pitch += kick * 2.8
+	yaw += kick * kick * kick_side * 0.9
 	var sh = shake * shake
 	pos += Vector3(randf_range(-1, 1), randf_range(-1, 1), 0) * sh * 0.05
 	cam.position = pos
@@ -2012,8 +2061,10 @@ func _shoot(p: Vector2) -> void:
 			weapon = "pistol"
 			wpn_ammo = 0
 	shots_fired += 1
-	kick = 1.0 if w != "smg" else 0.7
-	shake = maxf(shake, 0.25 if w == "pistol" else (0.3 if w == "smg" else 0.55))
+	kick = 1.0 if w != "smg" else 0.75
+	kick_side = randf_range(-1.0, 1.0)
+	mflash = 1.4 if w in ["shotgun", "rocket"] else 1.0
+	shake = maxf(shake, 0.32 if w == "pistol" else (0.36 if w == "smg" else 0.7))
 	match w:
 		"shotgun":
 			_sfx("shotgun", 1.0, 0.04)
@@ -2046,6 +2097,7 @@ func _shoot(p: Vector2) -> void:
 			var tg = _assist_nearest(p, 3.4)
 			if tg.is_empty():
 				break
+			_shred(tg.e, tg.e.mi.global_transform * tg.lp, "shotgun")
 			_kill_enemy(tg.e, tg.e.mi.global_transform * tg.lp, false)
 		for i in 5:
 			var sp = p + Vector2(randf_range(-55, 55), randf_range(-40, 40))
@@ -2079,7 +2131,13 @@ func _shoot(p: Vector2) -> void:
 	var c = hit.card
 	if enemies.has(c) and c.state != "fall" and c.state != "hide" and (c.kind == "card" or c.kind == "box"):
 		_impact(hit, false)
+		if c.kind == "card":
+			_shred(c, hit.point, w)
 		_kill_enemy(c, hit.point, hit.uv.y < 0.17 and not c.get("box", false))
+	elif enemies.has(c) and c.state == "fall" and c.kind == "card":
+		# auf den fallenden Aufsteller weiterschießen: noch mehr Löcher und Fetzen
+		_impact(hit, false)
+		_shred(c, hit.point, w)
 	else:
 		_impact(hit, true)
 		# Schuss aufs Auto mit der Schrotflinte o. Ä. lässt es nicht explodieren – dafür braucht es Granate oder Rakete
@@ -2208,6 +2266,8 @@ func _explode(pos: Vector3, radius: float, hurts_player: bool, snd: String = "bo
 		var ep: Vector3 = e.mi.global_transform * Vector3(0, e.h * 0.5, 0)
 		var d = Vector2(ep.x - pos.x, ep.z - pos.z).length()
 		if d < radius and absf(ep.y - pos.y) < radius + 1.0:
+			if e.kind == "card" and not e.get("box", false):
+				_shred(e, ep, "boom")
 			_kill_enemy(e, ep, false)
 	if not car_dead and not car_card.is_empty():
 		var cp: Vector3 = car_card.pv.global_position + Vector3(0, 0.7, 0)
@@ -2517,24 +2577,24 @@ func _impact(hit: Dictionary, hole: bool) -> void:
 	fx_k = clampf(p.distance_to(cam.global_position) / 7.0, 0.22, 1.3)
 	match kind:
 		"brick":
-			_sparks(out, n, 9)
-			_dust(out, n, 7, Color(0.78, 0.64, 0.5), 0.35)
-			_chunks(out, n, 9, [Color(0.6, 0.33, 0.22), Color(0.82, 0.74, 0.62), Color(0.45, 0.3, 0.22)], 0.035)
+			_sparks(out, n, 14)
+			_dust(out, n, 10, Color(0.78, 0.64, 0.5), 0.45)
+			_chunks(out, n, 13, [Color(0.6, 0.33, 0.22), Color(0.82, 0.74, 0.62), Color(0.45, 0.3, 0.22)], 0.035)
 			_sfx("impact_brick", -3.0, 0.15)
 		"metal":
-			_sparks(out, n, 22)
-			_dust(out, n, 2, Color(0.5, 0.45, 0.4), 0.2)
+			_sparks(out, n, 32)
+			_dust(out, n, 4, Color(0.5, 0.45, 0.4), 0.28)
 			_sfx("impact_metal", -4.0, 0.15)
 		"wood":
-			_chunks(out, n, 11, [Color(0.55, 0.38, 0.22), Color(0.72, 0.55, 0.35)], 0.04)
-			_dust(out, n, 4, Color(0.62, 0.5, 0.36), 0.25)
+			_chunks(out, n, 16, [Color(0.55, 0.38, 0.22), Color(0.72, 0.55, 0.35)], 0.045)
+			_dust(out, n, 6, Color(0.62, 0.5, 0.36), 0.25)
 			_sfx("impact_card", -2.0, 0.2)
 		"leaf":
 			_chunks(out, n, 12, [Color(0.35, 0.42, 0.15), Color(0.55, 0.55, 0.2), Color(0.42, 0.33, 0.12)], 0.05, 0.25)
 			_sfx("impact_card", -10.0, 0.3)
 		"card":
-			_chunks(out, n, 10, [Color(0.78, 0.66, 0.5), Color(0.6, 0.48, 0.34)], 0.04)
-			_dust(out, n, 3, Color(0.7, 0.6, 0.48), 0.2)
+			_chunks(out, n, 16, [Color(0.78, 0.66, 0.5), Color(0.6, 0.48, 0.34)], 0.045)
+			_dust(out, n, 5, Color(0.7, 0.6, 0.48), 0.28)
 			_sfx("impact_card", 0.0, 0.1)
 		"ground":
 			_dust(out, Vector3.UP, 8, Color(0.6, 0.48, 0.36), 0.35)
@@ -3075,10 +3135,17 @@ func _autotest(dt: float) -> void:
 		at_step = 153
 	elif at_step == 153 and at_t > 31.6:
 		_snap("20_harbor")
-		cover = true
+		weapon = "shotgun"
+		wpn_ammo = 3
+		for e in enemies:
+			if e.slot.name == "door_bl" and not e.get("box", false):
+				_shoot(cam.unproject_position(e.mi.global_transform * Vector3(0, e.h * 0.6, 0)))
 		at_step = 154
-	elif at_step == 154 and at_t > 32.4:
-		_snap("21_harbor_cover")
+	elif at_step == 154 and at_t > 31.75:
+		_snap("20b_shotgun")
+		at_step = 157
+	elif at_step == 157 and at_t > 32.4:
+		_snap("21_shreds")
 		cover = false
 		for e in enemies:
 			if not e.get("box", false) and e.state != "fall":
@@ -3145,10 +3212,11 @@ func _make_street_life(fac: Dictionary, fac_h: float, tree: Dictionary) -> Node3
 	fac.pv.add_child(nb_door)
 	nb_door.position = Vector3((dh[0] - 0.5) * FAC_W, (1.0 - dh[3]) * fac_h, 0.04)
 	_adopt(nb_door, door.pv, Vector3(dw * 0.5, 0, 0))
-	nb_door.rotation.y = deg_to_rad(-163.0)
+	nb_door.rotation.y = 0.0
 	# der Nachbar (Pappaufsteller wie die Gegner)
-	var npos = Vector3(((dh[0] + dh[1]) * 0.5 - 0.5) * FAC_W + 0.05, FAC_Y + (1.0 - dh[3]) * fac_h, FAC_Z - 0.3)
-	nb_card = _card("neighbor0.png", 1.85 * 720.0 / 1166.0, npos, "npc", 1.85)
+	# fast so hoch wie die Tür, steht auf der Schwelle vor der Wand (damit Arm und Flasche nicht im Rahmen verschwinden)
+	var npos = Vector3(((dh[0] + dh[1]) * 0.5 - 0.5) * FAC_W + 0.08, FAC_Y + (1.0 - dh[3]) * fac_h, FAC_Z + 0.14)
+	nb_card = _card("neighbor0.png", 2.6 * 720.0 / 1166.0, npos, "npc", 2.6)
 	nb_card.pv.visible = false
 	nb = {"state": "off", "t": 0.0, "at": 999.0, "shot": false, "stay": 0.0}
 	for n in ["nb_yell0", "nb_yell1", "nb_yell2", "nb_beer0", "nb_beer1", "nb_beer2"]:
@@ -3210,6 +3278,13 @@ void fragment() {
 	pn.add_child(pmi)
 	# unsichtbarer Leuchtpunkt unter der Straße, damit der Licht-Shader schon vor dem Hafen fertig ist
 	_glow(deco, _soft_tex(16, 1.4), Vector3(0, -3.4, -7.0), 0.2, Color(0, 0, 0), "flick")
+	var wq = MeshInstance3D.new()
+	var wqm = QuadMesh.new()
+	wqm.size = Vector2(0.2, 0.2)
+	wq.mesh = wqm
+	wq.material_override = _shred_mat(_tex("enemy0.png"))
+	deco.add_child(wq)
+	wq.position = Vector3(0.6, -3.4, -7.0)
 	paper = {"n": pn, "mat": pm, "pos": Vector3(-3.2, 0.012, -10.3), "vel": Vector3.ZERO, "rot": Vector3(0, 0.4, 0), "av": Vector3.ZERO,
 		"gust": 0.0, "next": 5.0, "curl": 0.12, "roll": 0.0, "flap": 0.0, "air": false}
 	pn.position = paper.pos
@@ -3252,6 +3327,7 @@ func _make_harbor_life(sky_pv: Node3D) -> Node3D:
 	# Flutlichtmast rechts: Lampenkranz oben
 	for u in [0.22, 0.5, 0.78]:
 		_glow(deco, gl, Vector3(8.4 + (u - 0.5) * 1.9, -0.05 + 7.25, -11.5), 1.1, Color(1.0, 0.8, 0.5), "flick")
+	_harbor_atmo(deco)
 	return deco
 
 
@@ -3294,25 +3370,33 @@ func _life_update(dt: float) -> void:
 		_birds_update(dt)
 		_paper_update(dt)
 	_nb_update(dt)
+	_door_update(dt)
 
 
 func _harbor_update(dt: float) -> void:
+	_atmo_update(dt)
 	# Lampen: meist ruhig, ab und zu ein kurzes Flackern; Warnlichter blinken langsam
 	for g in glows:
 		var k = 1.0
 		if g.mode == "blink":
 			k = 1.0 if fmod(life_t + g.ph, 1.8) < 0.7 else 0.08
+		elif g.mode == "beacon":
+			k = 0.25 + 0.75 * pow(maxf(0.0, sin(life_t * 4.2 + g.ph)), 3.0)
+		elif g.mode == "steady":
+			k = 0.9 + sin(life_t * 1.3 + g.ph) * 0.05
 		else:
+			# sanftes Atmen, ab und zu ein kleines Zucken; jede fünfte Lampe ist eine Wackelkandidatin
+			var faulty = int(g.ph * 10.0) % 5 == 0
 			g.t -= dt
 			if g.t <= 0.0:
 				if g.dip > 0.0:
 					g.dip = 0.0
-					g.t = randf_range(1.5, 7.0) if randf() < 0.7 else randf_range(0.04, 0.12)
+					g.t = randf_range(2.0, 9.0) if (not faulty or randf() < 0.6) else randf_range(0.05, 0.15)
 				else:
-					g.dip = randf_range(0.35, 0.85)
-					g.t = randf_range(0.04, 0.16)
-			k = 1.0 - g.dip + sin(life_t * 23.0 + g.ph) * 0.04
-		g.k = lerpf(g.k, k, 1.0 - exp(-dt * 30.0))
+					g.dip = randf_range(0.4, 0.75) if faulty else randf_range(0.1, 0.25)
+					g.t = randf_range(0.05, 0.14) if faulty else randf_range(0.15, 0.4)
+			k = 1.0 - g.dip + sin(life_t * 1.7 + g.ph) * 0.06 + sin(life_t * 7.0 + g.ph * 3.0) * 0.02
+		g.k = lerpf(g.k, k, 1.0 - exp(-dt * (30.0 if g.mode == "blink" else 12.0)))
 		g.mi.set_instance_shader_parameter("k", g.k)
 	# Laufkatze: fährt langsam hin und her, hält an den Enden, der Container pendelt nach
 	if crane_load != null:
@@ -3450,11 +3534,17 @@ func _nb_start() -> void:
 		return
 	sl.busy = true
 	_evt("neighbor")
-	nb.state = "up"
+	nb.state = "opening"
 	nb.t = 0.0
 	nb.shot = false
 	nb_card.mat.set_shader_parameter("tex", _tex("neighbor0.png"))
 	nb_card.img = img_cache.get("neighbor0.png")
+	_door_swing(true, 0.3)
+
+
+func _nb_appear() -> void:
+	nb.state = "up"
+	nb.t = 0.0
 	nb_card.pv.visible = true
 	nb_card.pv.rotation.x = -PI * 0.5
 	var tw = create_tween()
@@ -3463,6 +3553,31 @@ func _nb_start() -> void:
 	var line = "nb_yell%d" % (randi() % 3)
 	nb.stay = nb_snd[line].get_length() + 0.9
 	get_tree().create_timer(0.3).timeout.connect(func(): _nb_say(line))
+
+
+# Haustür auf- oder zuschwingen (nach außen, liegt offen flach an der Wand)
+func _door_swing(open: bool, dur: float) -> void:
+	door_open = open
+	door_t = 0.0
+	var tw = create_tween()
+	tw.tween_property(nb_door, "rotation:y", deg_to_rad(-163.0) if open else 0.0, dur).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT if open else Tween.EASE_IN)
+	if open:
+		_sfx("door_open", -9.0, 0.08)
+
+
+# ohne Nachbar: Tür geht auf, wenn ein Gegner in der Tür auftaucht, und wieder zu, wenn er weg ist
+func _door_update(dt: float) -> void:
+	if nb_door == null or scene != "street" or nb.get("state", "off") != "off":
+		return
+	var sl = _door_slot()
+	if sl.is_empty():
+		return
+	door_t += dt
+	if sl.busy and not door_open:
+		_door_swing(true, 0.28)
+	elif not sl.busy and door_open and door_t > 0.6:
+		_door_swing(false, 0.32)
+		get_tree().create_timer(0.3).timeout.connect(func(): _sfx("door_slam", -14.0, 0.1))
 
 
 func _nb_say(line: String) -> void:
@@ -3523,6 +3638,9 @@ func _nb_update(dt: float) -> void:
 		return
 	nb.t += dt
 	match nb.state:
+		"opening":
+			if nb.t > 0.3:
+				_nb_appear()
 		"up":
 			if nb.t > 0.35:
 				nb.state = "stay"
@@ -3537,6 +3655,7 @@ func _nb_update(dt: float) -> void:
 				nb_card.pv.visible = false
 				nb.state = "slam"
 				nb.t = 0.0
+				door_open = false
 				var tw = create_tween()
 				tw.tween_property(nb_door, "rotation:y", 0.0, 0.2).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
 		"slam":
@@ -3555,16 +3674,10 @@ func _nb_update(dt: float) -> void:
 				fx_k = 1.0
 				_dust(nb_door.global_position + Vector3(0.7, 0.1, 0.15), Vector3(0, 0.3, 1).normalized(), 8, Color(0.7, 0.6, 0.5), 0.4)
 		"closed":
-			if nb.t > 3.8:
-				nb.state = "reopen"
-				nb.t = 0.0
-				_sfx("door_open", -6.0, 0.05)
-				var tw = create_tween()
-				tw.tween_property(nb_door, "rotation:y", deg_to_rad(-163.0), 1.3).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
-		"reopen":
-			if nb.t > 1.35:
+			if nb.t > 1.2:
 				nb.state = "off"
 				nb.t = 0.0
+				door_t = 0.0
 				var sl = _door_slot()
 				if not sl.is_empty():
 					sl.busy = false
@@ -3576,8 +3689,228 @@ func _nb_reset() -> void:
 	nb.state = "off"
 	nb.t = 0.0
 	nb_card.pv.visible = false
-	nb_door.rotation.y = deg_to_rad(-163.0)
+	nb_door.rotation.y = 0.0
+	door_open = false
 	if scenes.has("street"):
 		for sl in scenes.street.slots:
 			if sl.name == "door":
 				sl.busy = false
+
+
+# ---------------------------------------------------------------------------
+# Pappe zerfetzen: Löcher im Aufsteller (Shader) und Fetzen aus dem Gegnerbild, die wegfliegen
+
+func _shred_mat(tex: Texture2D) -> ShaderMaterial:
+	var key = tex.get_instance_id()
+	if shred_mats.has(key):
+		return shred_mats[key]
+	if shred_shader == null:
+		shred_shader = Shader.new()
+		shred_shader.code = """
+shader_type spatial;
+render_mode cull_disabled, depth_prepass_alpha, diffuse_lambert, specular_disabled;
+uniform sampler2D tex : source_color, filter_linear_mipmap, repeat_disable;
+uniform float dim = 1.0;
+instance uniform vec4 region = vec4(0.0, 0.0, 1.0, 1.0);
+instance uniform float seed = 0.0;
+void fragment() {
+	vec2 d = UV - 0.5;
+	float ang = atan(d.y, d.x);
+	float r = 0.4 + 0.08 * sin(ang * 5.0 + seed * 6.0) + 0.05 * sin(ang * 9.0 + seed * 2.0) + 0.03 * sin(ang * 17.0 + seed);
+	vec4 c = texture(tex, region.xy + UV * region.zw);
+	float L = length(d);
+	vec3 col = FRONT_FACING ? c.rgb : vec3(0.56, 0.44, 0.32);
+	col = mix(col, vec3(0.7, 0.58, 0.42), smoothstep(r - 0.07, r, L) * 0.85);
+	ALBEDO = col * dim;
+	ALPHA = (FRONT_FACING ? c.a : max(c.a, 0.0)) * step(L, r);
+	ALPHA_SCISSOR_THRESHOLD = 0.5;
+	ROUGHNESS = 1.0;
+}
+"""
+	var m = ShaderMaterial.new()
+	m.shader = shred_shader
+	m.set_shader_parameter("tex", tex)
+	shred_mats[key] = m
+	return m
+
+
+func _shred(c: Dictionary, point: Vector3, power: String) -> void:
+	if not is_instance_valid(c.get("mi")):
+		return
+	var tex: Texture2D = c.mat.get_shader_parameter("tex")
+	var lp: Vector3 = c.mi.global_transform.affine_inverse() * point
+	var u = clampf(lp.x / c.w + 0.5, 0.0, 1.0)
+	var v = clampf(1.0 - lp.y / c.h, 0.0, 1.0)
+	var asp = c.w / c.h
+	if not c.has("holes"):
+		c.holes = []
+	# Löcher: (u, v, Radius in Bildhöhe, Zufall)
+	var new_holes = []
+	var frags = []   # [u, v, Größe in m]
+	match power:
+		"shotgun":
+			for i in 8:
+				new_holes.append(Vector4(u + randf_range(-0.22, 0.22) / asp * 0.5, v + randf_range(-0.12, 0.12), randf_range(0.022, 0.045), randf() * 9.0))
+			for i in 2:
+				new_holes.append(Vector4(u + randf_range(-0.15, 0.15) / asp * 0.5, v + randf_range(-0.08, 0.08), randf_range(0.06, 0.09), randf() * 9.0))
+			for i in 9:
+				frags.append([u + randf_range(-0.2, 0.2), v + randf_range(-0.12, 0.12), randf_range(0.12, 0.3)])
+		"boom", "rocket":
+			for i in 10:
+				new_holes.append(Vector4(randf_range(0.15, 0.85), randf_range(0.08, 0.95), randf_range(0.05, 0.11), randf() * 9.0))
+			for i in 14:
+				frags.append([randf_range(0.15, 0.85), randf_range(0.05, 0.95), randf_range(0.16, 0.38)])
+		"smg":
+			new_holes.append(Vector4(u, v, randf_range(0.022, 0.032), randf() * 9.0))
+			for i in 2:
+				frags.append([u + randf_range(-0.05, 0.05), v + randf_range(-0.04, 0.04), randf_range(0.07, 0.13)])
+		_:
+			new_holes.append(Vector4(u, v, randf_range(0.03, 0.04), randf() * 9.0))
+			for i in 4:
+				frags.append([u + randf_range(-0.06, 0.06), v + randf_range(-0.05, 0.05), randf_range(0.07, 0.16)])
+	c.holes.append_array(new_holes)
+	while c.holes.size() > 16:
+		c.holes.pop_front()
+	var arr = PackedVector4Array()
+	for h in c.holes:
+		arr.append(h)
+	c.mat.set_shader_parameter("holes", arr)
+	c.mat.set_shader_parameter("nholes", c.holes.size())
+	c.mat.set_shader_parameter("aspect", asp)
+	# Fetzen fliegen vom Spieler weg (in die Szene), etwas nach oben und zur Seite
+	var m = _shred_mat(tex)
+	m.set_shader_parameter("dim", c.mat.get_shader_parameter("dim"))
+	var away: Vector3 = (point - cam.global_position).normalized()
+	var xf: Transform3D = c.mi.global_transform
+	for f in frags:
+		var sz: float = f[2]
+		var fu: float = f[0]
+		var fv: float = f[1]
+		var mi = MeshInstance3D.new()
+		var q = QuadMesh.new()
+		q.size = Vector2(sz, sz)
+		mi.mesh = q
+		mi.material_override = m
+		mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		add_child(mi)
+		var du = sz / c.w
+		var dv = sz / c.h
+		mi.set_instance_shader_parameter("region", Vector4(fu - du * 0.5, fv - dv * 0.5, du, dv))
+		mi.set_instance_shader_parameter("seed", randf() * 9.0)
+		var pos: Vector3 = xf * Vector3((fu - 0.5) * c.w, (1.0 - fv) * c.h, 0.03)
+		mi.global_position = pos
+		mi.global_rotation = c.mi.global_rotation
+		var k = 1.0 if power in ["pistol", "smg"] else 1.6
+		var vel = away * randf_range(1.0, 3.0) * k + Vector3(randf_range(-1.6, 1.6), randf_range(1.0, 3.2), 0) * k
+		shreds.append({"mi": mi, "vel": vel, "av": Vector3(randf_range(-9, 9), randf_range(-9, 9), randf_range(-9, 9)), "t": 0.0, "life": randf_range(1.6, 2.6), "rest": false})
+	# ein paar Farbspritzer wie von einer Farbpatrone
+	fx_k = clampf(point.distance_to(cam.global_position) / 7.0, 0.22, 1.3)
+	var nrm: Vector3 = -away
+	_chunks(point + nrm * 0.03, nrm, 5 if power in ["pistol", "smg"] else 10, [Color(0.78, 0.07, 0.05), Color(0.55, 0.03, 0.03)], 0.025)
+	while shreds.size() > 70:
+		var o = shreds.pop_front()
+		if is_instance_valid(o.mi):
+			o.mi.queue_free()
+
+
+func _shreds_update(dt: float) -> void:
+	for i in range(shreds.size() - 1, -1, -1):
+		var f = shreds[i]
+		f.t += dt
+		if not is_instance_valid(f.mi) or f.t > f.life:
+			if is_instance_valid(f.mi):
+				f.mi.queue_free()
+			shreds.remove_at(i)
+			continue
+		if not f.rest:
+			f.vel.y -= 7.5 * dt
+			f.vel *= exp(-dt * 1.4)          # Luftwiderstand: Pappe segelt
+			f.mi.global_position += f.vel * dt
+			f.mi.rotate_x(f.av.x * dt)
+			f.mi.rotate_y(f.av.y * dt)
+			f.mi.rotate_z(f.av.z * dt)
+			if f.mi.global_position.y < 0.02:
+				var gp: Vector3 = f.mi.global_position
+				gp.y = 0.02
+				f.mi.global_position = gp
+				f.mi.global_rotation = Vector3(-PI * 0.5, randf() * TAU, 0)
+				f.rest = true
+		var left = f.life - f.t
+		if left < 0.35:
+			f.mi.scale = Vector3.ONE * maxf(0.01, left / 0.35)
+
+
+# ---------------------------------------------------------------------------
+# Hafen-Atmosphäre: Nebelschwaden, vorbeiziehendes Schiff, Rundumleuchte am Lkw
+
+var fog = []
+var fog_shader: Shader
+var ship: Node3D
+func _harbor_atmo(deco: Node3D) -> void:
+	var gl = _soft_tex(64, 1.4)
+	# mehr Lampen im Hintergrund, in verschiedenen Entfernungen
+	for uv in [Vector2(0.125, 0.486), Vector2(0.065, 0.3301), Vector2(0.071, 0.3106), Vector2(0.6981, 0.5932), Vector2(0.7088, 0.6218),
+			Vector2(0.7411, 0.606), Vector2(0.9415, 0.5579), Vector2(0.3995, 0.4653), Vector2(0.2422, 0.3709), Vector2(0.1829, 0.5365)]:
+		_glow(deco, gl, Vector3((uv.x - 0.5) * 220.0, -28.6 + (1.0 - uv.y) * 94.27, -74.5), 3.2, Color(1.0, 0.74, 0.4), "flick")
+	for uv in [Vector2(0.6537, 0.6504), Vector2(0.9682, 0.5792), Vector2(0.9462, 0.7533), Vector2(0.5739, 0.4233)]:
+		_glow(deco, gl, Vector3((uv.x - 0.5) * 220.0, -28.6 + (1.0 - uv.y) * 94.27, -74.5), 4.5, Color(0.8, 0.9, 1.0), "flick")
+	# Rundumleuchte auf dem Lkw-Dach
+	_glow(deco, gl, Vector3(-7.9 + (0.793 - 0.5) * 5.6, -0.05 + (1.0 - 0.044) * 3.0, -10.3), 0.9, Color(1.0, 0.55, 0.1), "beacon")
+	# ein Schiff zieht ganz hinten langsam vorbei (Topplicht weiß, Seitenlichter rot/grün)
+	ship = Node3D.new()
+	deco.add_child(ship)
+	_glow(ship, gl, Vector3(0, 2.2, 0), 2.2, Color(1.0, 0.95, 0.85), "steady")
+	_glow(ship, gl, Vector3(-3.0, 0.6, 0), 1.6, Color(1.0, 0.15, 0.1), "steady")
+	_glow(ship, gl, Vector3(3.0, 0.6, 0), 1.6, Color(0.2, 1.0, 0.35), "steady")
+	_glow(ship, gl, Vector3(-1.2, 0.9, 0), 1.2, Color(1.0, 0.8, 0.5), "steady")
+	_glow(ship, gl, Vector3(1.0, 0.9, 0), 1.2, Color(1.0, 0.8, 0.5), "steady")
+	ship.position = Vector3(-120.0, -1.0, -74.0)
+	# Nebelschwaden: weich, kaum sichtbar, ziehen langsam durchs Flutlicht
+	fog_shader = Shader.new()
+	fog_shader.code = """
+shader_type spatial;
+render_mode unshaded, depth_draw_never, cull_disabled, shadows_disabled;
+uniform sampler2D tex : filter_linear_mipmap;
+uniform vec4 col : source_color = vec4(0.62, 0.7, 0.8, 1.0);
+instance uniform float k = 0.1;
+void fragment() {
+	float a = texture(tex, UV).a;
+	ALBEDO = col.rgb;
+	ALPHA = a * k;
+}
+"""
+	var ft = _soft_tex(64, 1.0)
+	for i in 9:
+		var m = ShaderMaterial.new()
+		m.shader = fog_shader
+		m.set_shader_parameter("tex", ft)
+		if i % 3 == 0:
+			m.set_shader_parameter("col", Color(0.85, 0.7, 0.5, 1.0))   # im warmen Flutlicht
+		var mi = MeshInstance3D.new()
+		var q = QuadMesh.new()
+		var far = i < 6
+		q.size = Vector2(randf_range(14.0, 22.0), randf_range(2.5, 4.5)) if far else Vector2(randf_range(8.0, 12.0), randf_range(1.0, 1.6))
+		mi.mesh = q
+		mi.material_override = m
+		mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		deco.add_child(mi)
+		var z = randf_range(-34.0, -17.0) if far else randf_range(-11.5, -8.5)
+		var y = randf_range(3.0, 9.0) if far else randf_range(0.4, 0.9)
+		mi.position = Vector3(randf_range(-28.0, 28.0), y, z)
+		fog.append({"mi": mi, "spd": randf_range(0.25, 0.6) * (1.0 if randf() < 0.7 else -1.0), "a": (0.13 if far else 0.07), "ph": randf() * TAU})
+
+
+func _atmo_update(dt: float) -> void:
+	for f in fog:
+		var p: Vector3 = f.mi.position
+		p.x += f.spd * dt
+		if p.x > 32.0:
+			p.x = -32.0
+		elif p.x < -32.0:
+			p.x = 32.0
+		f.mi.position = p
+		f.mi.set_instance_shader_parameter("k", f.a * (0.65 + 0.35 * sin(life_t * 0.21 + f.ph)))
+	if ship != null:
+		ship.position.x += 1.4 * dt
+		if ship.position.x > 120.0:
+			ship.position.x = -120.0
