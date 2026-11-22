@@ -33,7 +33,8 @@ const CAM_INTRO = Vector3(0.0, 3.1, 2.6)
 const CAM_INTRO_PITCH = -5.0
 
 const MAG = 8                 # Schuss pro Magazin
-const RELOAD_TIME = 0.69
+const RELOAD_TIME = 0.6
+const RELOAD_SKIP = 0.08     # Nachladesound etwas später starten, damit der Schlitten-Klick genau am Ende kommt
 const KILLS_PER_STAGE = 12
 
 var cam: Camera3D
@@ -1064,9 +1065,23 @@ func _hud_draw(c: Control) -> void:
 				var bl = 0.5 + 0.5 * sin(st_t * 18.0)
 				c.draw_arc(gsp, 34, 0, TAU, 36, Color(1.0, 0.2, 0.1, 0.6 + 0.4 * bl), 3.5, true)
 				c.draw_arc(gsp, 50, 0, TAU, 36, Color(1.0, 0.2, 0.1, 0.35 * bl), 2.0, true)
-		if ammo == 0 and reserve > 0 and not cover and reload_t <= 0:
-			var bl = 0.55 + 0.45 * sin(st_t * 10.0)
-			_text(c, Vector2(0, vs.y * 0.66), "RELOAD  –  LET GO TO TAKE COVER", 30, Color(1, 0.85, 0.4, bl), HORIZONTAL_ALIGNMENT_CENTER, vs.x)
+		# Nachlade-Hinweis: gelb bei der letzten Patrone, rot und blinkend bei leerem Magazin
+		if weapon == "pistol" and not cover and reload_t <= 0 and ammo <= 1 and break_t <= 0.0 and (ammo == 0 or reserve > 0):
+			var bl = 0.75 + 0.25 * sin(st_t * 10.0)
+			var bw = 230.0 if (ammo == 0 and reserve == 0) else 190.0
+			_panel(c, Rect2(vs.x * 0.5 - bw * 0.5, vs.y * 0.64 - 40.0, bw, 52.0), 0.5)
+			if ammo == 0 and reserve == 0:
+				_text(c, Vector2(0, vs.y * 0.64), "NO AMMO", 34, Color(1, 0.3, 0.22, bl), HORIZONTAL_ALIGNMENT_CENTER, vs.x)
+			elif ammo == 0:
+				_text(c, Vector2(0, vs.y * 0.64), "RELOAD", 34, Color(1, 0.3, 0.22, bl), HORIZONTAL_ALIGNMENT_CENTER, vs.x)
+			elif reserve > 0:
+				_text(c, Vector2(0, vs.y * 0.64), "RELOAD", 30, Color(1, 0.85, 0.25, 0.9), HORIZONTAL_ALIGNMENT_CENTER, vs.x)
+		# Fortschritt beim Nachladen als Ring ums Fadenkreuz
+		if reload_t > 0.0:
+			var rp = aim if not cover else vs * Vector2(0.5, 0.5)
+			var fr = 1.0 - reload_t / RELOAD_TIME
+			c.draw_arc(rp, 30, 0, TAU, 40, Color(0, 0, 0, 0.35), 5.0, true)
+			c.draw_arc(rp, 30, -PI * 0.5, -PI * 0.5 + TAU * fr, 40, Color(1, 0.85, 0.4, 0.95), 3.5, true)
 		if cover and reload_t > 0:
 			_text(c, Vector2(0, vs.y * 0.62), "RELOADING", 24, Color(1, 1, 1, 0.8), HORIZONTAL_ALIGNMENT_CENTER, vs.x, font_light)
 		if tip_t > 0:
@@ -1559,27 +1574,24 @@ func _play_update(dt: float) -> void:
 		if not break_reload and break_t < 1.9:
 			break_reload = true
 			reload_player.stream = sounds.get("reload")
-			reload_player.play()
+			reload_player.pitch_scale = 1.0
+			reload_player.play(RELOAD_SKIP)
 		if break_reload and break_t < 1.9 - RELOAD_TIME and round_kills >= round_goal:
 			_round_setup()   # genau mit dem Schlitten-Klick ist die Waffe voll
 		return
-	# Nachladen nur in Deckung
-	if cover and ammo < MAG and reserve > 0:
-		if reload_t <= 0:
-			reload_t = RELOAD_TIME
-			reload_player.stream = sounds.get("reload")
-			reload_player.pitch_scale = 1.0
-			reload_player.play()
+	# Nachladen: startet beim Ducken und läuft zu Ende, auch wenn man gleich wieder aufsteht
+	if reload_t > 0.0:
 		reload_t -= dt
 		if reload_t <= 0:
 			var take = mini(MAG - ammo, reserve)
 			ammo += take
 			reserve -= take
 			reload_t = 0.0
-	elif not cover:
-		if reload_t > 0.0:
-			reload_player.stop()   # Nachladen abgebrochen, also auch kein Klick
-		reload_t = 0.0
+	elif cover and ammo < MAG and reserve > 0:
+		reload_t = RELOAD_TIME
+		reload_player.stream = sounds.get("reload")
+		reload_player.pitch_scale = 1.0
+		reload_player.play(RELOAD_SKIP)
 	# Maschinengewehr: Feuerknopf halten = Dauerfeuer
 	if weapon == "smg" and fire_idx >= 0 and not cover:
 		auto_t -= dt
@@ -2073,6 +2085,8 @@ func _press(p: Vector2, idx: int = 0) -> void:
 func _shoot(p: Vector2) -> void:
 	_evt("shot " + weapon)
 	var w = weapon
+	if w == "pistol" and reload_t > 0.0:
+		return
 	if w == "pistol":
 		if ammo <= 0:
 			_sfx("empty", -2.0, 0.02)
@@ -3192,11 +3206,33 @@ func _autotest(dt: float) -> void:
 		_snap("23_forklift_wreck")
 		life_t = 14.0
 		weapon = "pistol"
+		cover = false
+		ammo = 1
+		reserve = 5
+		at_step = 160
+	elif at_step == 160 and at_t > 35.8:
+		_snap("24_reload_yellow")
+		ammo = 0
+		at_step = 161
+	elif at_step == 161 and at_t > 36.1:
+		_snap("25_reload_red")
+		cover = true
+		at_step = 162
+	elif at_step == 162 and at_t > 36.25:
+		cover = false
+		at_step = 163
+	elif at_step == 163 and at_t > 36.45:
+		_snap("26_reload_ring")
+		print("RELOAD t=", reload_t, " ammo=", ammo, "/", reserve)
+		at_step = 164
+	elif at_step == 164 and at_t > 37.0:
+		print("RELOAD done ammo=", ammo, "/", reserve)
+		weapon = "pistol"
 		ammo = 0
 		reserve = 0
 		grenades = 0
 		at_step = 13
-	elif at_step == 13 and at_t > 38.0:
+	elif at_step == 13 and at_t > 39.6:
 		_snap("09_game_over")
 		get_tree().quit()
 
@@ -3455,18 +3491,18 @@ func _birds_update(dt: float) -> void:
 		bird_t = randf_range(16.0, 30.0)
 		var dir = 1.0 if randf() < 0.5 else -1.0
 		var n = randi_range(4, 7)
-		var y0 = randf_range(5.7, 6.7)
-		var spd = randf_range(5.5, 7.0)
+		var y0 = randf_range(10.0, 11.4)
+		var spd = randf_range(8.0, 10.0)
 		for i in n:
 			var mi = MeshInstance3D.new()
 			var q = QuadMesh.new()
-			q.size = Vector2(0.55, 0.58)
+			q.size = Vector2(1.0, 1.06)
 			mi.mesh = q
 			mi.material_override = bird_mat
 			mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 			scenes.street.deco.add_child(mi)
 			mi.scale = Vector3(dir, 1, 1)
-			var b = {"mi": mi, "x": -17.0 * dir - dir * randf_range(0.0, 3.5), "y": y0 + randf_range(-0.7, 0.7), "z": -11.0 + randf_range(-1.0, 0.8),
+			var b = {"mi": mi, "x": -30.0 * dir - dir * randf_range(0.0, 5.0), "y": y0 + randf_range(-0.7, 0.7), "z": -21.0 + randf_range(-1.5, 1.5),
 				"spd": spd * randf_range(0.92, 1.08), "dir": dir, "ph": randf() * 4.0, "glide": 0.0}
 			birds.append(b)
 	for i in range(birds.size() - 1, -1, -1):
@@ -3483,7 +3519,7 @@ func _birds_update(dt: float) -> void:
 				b.glide = randf_range(0.5, 1.1)
 		b.mi.position = Vector3(b.x, b.y + sin(b.ph * 0.35) * 0.12, b.z)
 		b.mi.set_instance_shader_parameter("frame", fr)
-		if absf(b.x) > 21.0:
+		if absf(b.x) > 34.0:
 			b.mi.queue_free()
 			birds.remove_at(i)
 
