@@ -18,6 +18,8 @@ const HOLES = [
 	[0.2037, 0.3114, 0.6068, 0.8377], [0.7011, 0.8101, 0.6068, 0.8377],
 	[0.4494, 0.5532, 0.6242, 0.9858]]
 const ENEMY_H = 1.8
+const ENEMY_H_BACK = 3.3      # hinten in Fenstern und Containern: etwa doppelt so groß, sonst erkennt man sie kaum
+const MIN_VIS = 1.8          # so lange bleibt jeder Gegner mindestens sichtbar
 const ENEMY_TEX = ["enemy0", "enemy1", "enemy2", "enemy3", "enemy4", "enemy5"]
 const GUN_V = [0.23, 0.23, 0.24, 0.23, 0.23, 0.2]   # Höhe der Pistole im Bild (von oben)
 
@@ -512,10 +514,13 @@ func _make_world() -> void:
 		var hh = HOLES[i]
 		var x = ((hh[0] + hh[1]) * 0.5 - 0.5) * FAC_W
 		var ybot = FAC_Y + (1.0 - hh[3]) * fac_h
-		if i == 6:   # Haustür: ganze Figur
-			slots.append({"pos": Vector3(x, ybot, FAC_Z - 0.3), "mode": "flip", "busy": false, "name": "door"})
+		if i == 6:   # Haustür: ganze Figur, fast so hoch wie die Tür
+			slots.append({"pos": Vector3(x, ybot, FAC_Z - 0.3), "mode": "flip", "busy": false, "name": "door", "eh": 2.75})
 		else:
-			slots.append({"pos": Vector3(x, ybot - 0.74, FAC_Z - 0.32), "mode": "flip", "busy": false, "name": "window%d" % i, "box_lift": 0.74})
+			# großer Gegner, Füße unter dem Fensterbrett, Kopf knapp unter dem Sturz
+			var wh = (hh[3] - hh[2]) * fac_h
+			var drop = ENEMY_H_BACK - (wh - 0.1)
+			slots.append({"pos": Vector3(x, ybot - drop, FAC_Z - 0.32), "mode": "flip", "busy": false, "name": "window%d" % i, "box_lift": drop, "eh": ENEMY_H_BACK})
 	slots.append({"pos": Vector3(-2.55, 0.0, -7.4), "mode": "flip", "busy": false, "name": "crates", "partner": "window4"})
 	for sl in slots:
 		if sl.name == "window4":
@@ -625,9 +630,12 @@ func _make_harbor() -> void:
 		var hh = S_HOLES[n]
 		var x = H_X + ((hh[0] + hh[1]) * 0.5 - 0.5) * H_W
 		var ybot = FAC_Y - sink + (1.0 - hh[3]) * ch
-		slots.append({"pos": Vector3(x, ybot - 0.03, FAC_Z - 0.5), "mode": "flip", "busy": false, "name": n})
+		var oh = (hh[3] - hh[2]) * ch
+		var eh = 3.1
+		var drop = eh - (oh - 0.08)
+		slots.append({"pos": Vector3(x, ybot - drop, FAC_Z - 0.5), "mode": "flip", "busy": false, "name": n, "eh": eh, "box_lift": drop})
 	# oben auf dem mittleren Container, hinter der Schiffsschraube, hinter den Paletten, hinter dem Gabelstapler
-	slots.append({"pos": Vector3(H_X, FAC_Y - sink + (1.0 - 0.058) * ch - 0.04, FAC_Z - 0.35), "mode": "flip", "busy": false, "name": "roof"})
+	slots.append({"pos": Vector3(H_X, FAC_Y - sink + (1.0 - 0.058) * ch - 0.04, FAC_Z - 0.35), "mode": "flip", "busy": false, "name": "roof", "eh": 2.8})
 	slots.append({"pos": Vector3(0.55, 0.0, -10.4), "mode": "flip", "busy": false, "name": "prop"})
 	slots.append({"pos": Vector3(-2.95, 0.3, -7.4), "mode": "flip", "busy": false, "name": "crates"})
 	# Gabelstapler-Spot liegt aus Spielersicht vor der rechten unteren Containertür: nie beide gleichzeitig
@@ -1599,7 +1607,7 @@ func _play_update(dt: float) -> void:
 	if _frozen():
 		return
 	spawn_t -= dt
-	if spawn_t <= 0 and alive < max_alive:
+	if spawn_t <= 0 and alive < max_alive and round_kills + alive < round_goal:
 		_spawn()
 		var base = maxf(0.6, 1.9 - _lvl() * 0.25)
 		spawn_t = base * randf_range(0.6, 1.25)
@@ -1646,8 +1654,9 @@ func _spawn() -> void:
 	var ti = randi() % ENEMY_TEX.size()
 	_evt("spawn " + ENEMY_TEX[ti])
 	var tex: Texture2D = _tex(ENEMY_TEX[ti] + ".png")
-	var w = ENEMY_H * tex.get_width() / float(tex.get_height())
-	var c = _card(ENEMY_TEX[ti] + ".png", w, s.pos, "card", ENEMY_H)
+	var eh: float = s.get("eh", ENEMY_H)
+	var w = eh * tex.get_width() / float(tex.get_height())
+	var c = _card(ENEMY_TEX[ti] + ".png", w, s.pos, "card", eh)
 	if scene == "harbor":
 		c.mat.set_shader_parameter("dim", 0.8)
 	c.merge({"slot": s, "state": "appear", "t": -0.3 if (scene == "street" and s.name == "door" and not door_open) else 0.0, "aim": _diff_aim() * randf_range(0.85, 1.2), "shots": 1 + (1 if _lvl() >= 2 and randf() < 0.35 else 0), "gun_v": GUN_V[ti], "mode": s.mode, "seen": 0.0, "side": -1.0 if randf() < 0.5 else 1.0, "voice": ["A", "B", "C", "D"][randi() % 4]}, true)
@@ -1670,11 +1679,11 @@ func _partner_busy(s: Dictionary) -> bool:
 func _spawn_box(s: Dictionary, mega: bool) -> void:
 	_evt("box" + (" mega" if mega else ""))
 	var pos: Vector3 = s.pos
-	if s.name.begins_with("window"):
-		pos.y += s.get("box_lift", 0.74)
-		pos.z += 0.1
-	elif s.name == "car":
+	if s.name == "car":
 		pos.y += s.get("box_lift", 1.02)
+	elif s.has("box_lift"):
+		pos.y += s.box_lift
+		pos.z += 0.1
 	var c = _card("box_mega.png" if mega else "box.png", 0.85 if mega else 0.8, pos, "box")
 	c.merge({"slot": s, "state": "appear", "t": 0.0, "aim": 99.0, "shots": 0, "gun_v": 0.5, "mode": "flip", "seen": 0.0, "side": 1.0,
 		"box": true, "mega": mega, "life": 2.4 if mega else 3.2}, true)
@@ -1803,6 +1812,8 @@ func _enemies_update(dt: float) -> void:
 	var gone = []
 	for e in enemies:
 		e.t += dt
+		if e.state != "hide" and e.state != "fall" and e.t > 0.0:
+			e.vis = e.get("vis", 0.0) + dt
 		match e.state:
 			"appear":
 				var k = _pop(maxf(e.t, 0.0) * 1.3)
@@ -1837,7 +1848,7 @@ func _enemies_update(dt: float) -> void:
 						e.state = "linger"
 						e.t = 0.0
 			"linger":
-				if e.t > 0.45:
+				if e.t > 0.45 and e.get("vis", 0.0) >= MIN_VIS:
 					_evt("enemy hides")
 					e.state = "hide"
 					e.t = 0.0
@@ -2113,9 +2124,9 @@ func _shoot(p: Vector2) -> void:
 	if not hit.is_empty() and hit.card == nb_card:
 		_nb_hit(hit.point)
 		return
-	# Bonus-Kisten haben Vorrang vor der Kulisse: steht eine Kiste knapp hinter dem Kistenstapel,
+	# Gegner und Bonus-Kisten haben Vorrang vor der Kulisse: wer auf den Gegner zielt, trifft ihn, egal was davorsteht: steht eine Kiste knapp hinter dem Kistenstapel,
 	# soll der Schuss nicht im Holz davor hängen bleiben
-	var live = enemies.filter(func(x): return x.state != "fall" and x.state != "hide" and x.kind == "box")
+	var live = enemies.filter(func(x): return x.state != "fall" and x.state != "hide" and (x.kind == "box" or x.kind == "card"))
 	var eh = _pick(p, live)
 	if not eh.is_empty():
 		hit = eh
@@ -2487,7 +2498,7 @@ func _snap_target() -> Vector2:
 	var best_p = center
 	var bd = 1e9
 	for sl in slots:
-		var wp: Vector3 = sl.pos + Vector3(0, ENEMY_H * 0.73, 0)
+		var wp: Vector3 = sl.pos + Vector3(0, sl.get("eh", ENEMY_H) * 0.73, 0)
 		var live = false
 		for e in enemies:
 			if e.slot == sl and e.state != "fall" and e.state != "hide" and is_instance_valid(e.mi):
