@@ -117,6 +117,7 @@ var car_card = {}
 var car_dead = false
 var car_fx = []             # Feuer und Rauch am kaputten Auto
 var car_burn_t = 0.0
+var car_burn_age = 0.0
 var car_smoke_t = 0.0
 var weapon = "pistol"       # pistol, shotgun, smg, rocket
 var wpn_ammo = 0
@@ -981,7 +982,7 @@ func _upd_draw(c: Control, a: float) -> void:
 func _warmup() -> void:
 	for n in ENEMY_TEX:
 		_tex(n + ".png")
-	for n in ["box.png", "box_mega.png"]:
+	for n in ["box.png", "box_mega.png", "car_bumper.png", "car_tire.png", "car_mirror.png"]:
 		_tex(n)
 	# unter der Straße: der Boden deckt alles ab, auch solange die Fassade noch flach liegt
 	var p = Vector3(0.0, -3.2, -7.0)
@@ -1032,7 +1033,7 @@ func _warmup() -> void:
 	var all_cards = []
 	for n in ENEMY_TEX:
 		all_cards.append(n + ".png")
-	all_cards += ["box.png", "box_mega.png"]
+	all_cards += ["box.png", "box_mega.png", "car_bumper.png", "car_tire.png", "car_mirror.png"]
 	for i in all_cards.size():
 		var c = _card(all_cards[i], 0.6, p + Vector3(-2.0 + i * 0.5, -0.5, 0), "card")
 		get_tree().create_timer(0.6).timeout.connect(c.pv.queue_free)
@@ -2027,16 +2028,34 @@ func _car_explode() -> void:
 	_fb_boom(cp + Vector3(0, 0.6, 0), 1.6)
 	score += 300
 	_float_text(cp + Vector3(0, 1.4, 0), "CAR  +300", true)
-	# Pappauto fliegt hoch, dreht sich und klatscht verkohlt hinten auf
-	car_card.mat.set_shader_parameter("dim", 0.32)
+	# Pappauto hüpft hoch, landet schief und verkohlt als Wrack wieder auf der Straße
+	car_card.mat.set_shader_parameter("dim", 0.22)
 	var pv: Node3D = car_card.pv
 	var base: Vector3 = car_card.base
 	var tw = create_tween()
-	tw.tween_property(pv, "position", base + Vector3(0.3, 2.4, -0.6), 0.45).set_ease(Tween.EASE_OUT).set_trans(Tween.TRANS_QUAD)
-	tw.parallel().tween_property(pv, "rotation", Vector3(-1.1, 0.25, 0.5), 0.45)
-	tw.tween_property(pv, "position", base + Vector3(0.5, 0.0, -0.9), 0.4).set_ease(Tween.EASE_IN).set_trans(Tween.TRANS_QUAD)
-	tw.parallel().tween_property(pv, "rotation", Vector3(-PI * 0.5, 0.3, 0.12), 0.4)
-	tw.tween_callback(func(): _sfx("target_down", 2.0, 0.0))
+	tw.tween_property(pv, "position", base + Vector3(0.15, 1.5, -0.2), 0.32).set_ease(Tween.EASE_OUT).set_trans(Tween.TRANS_QUAD)
+	tw.parallel().tween_property(pv, "rotation", Vector3(-0.35, 0.2, 0.28), 0.32)
+	tw.tween_property(pv, "position", base + Vector3(0.25, -0.16, -0.3), 0.3).set_ease(Tween.EASE_IN).set_trans(Tween.TRANS_QUAD)
+	tw.parallel().tween_property(pv, "rotation", Vector3(-0.1, 0.16, -0.09), 0.3)
+	tw.tween_callback(func(): _sfx("target_down", 3.0, 0.0))
+	tw.tween_property(pv, "position", base + Vector3(0.25, -0.05, -0.3), 0.08)
+	tw.tween_property(pv, "position", base + Vector3(0.25, -0.14, -0.3), 0.1)
+	# Trümmerteile fliegen weg und bleiben liegen: Stoßstange, Reifen, Spiegel
+	var parts = [["car_bumper.png", 1.95, Vector3(-1.9, 0.0, 0.35), Vector3(-0.95, 0.45, 0.18)],
+		["car_tire.png", 0.6, Vector3(-0.9, 0.0, 0.5), Vector3(0.0, 0.25, -0.12)],
+		["car_mirror.png", 0.25, Vector3(-2.6, 0.0, 0.6), Vector3(-PI * 0.4, 0.8, 0.0)]]
+	for pt in parts:
+		var d = _card(pt[0], pt[1], base + Vector3(0, 0.6, 0), "metal")
+		d.mat.set_shader_parameter("dim", 0.45)
+		car_fx.append(d.pv)
+		var end: Vector3 = base + pt[2]
+		var mid: Vector3 = (base + end) * 0.5 + Vector3(0, 1.6 + randf() * 0.6, 0)
+		var dt2 = create_tween()
+		dt2.tween_property(d.pv, "position", mid, 0.28).set_ease(Tween.EASE_OUT).set_trans(Tween.TRANS_QUAD)
+		dt2.parallel().tween_property(d.pv, "rotation", Vector3(randf_range(-3, 3), randf_range(-2, 2), randf_range(-3, 3)), 0.28)
+		dt2.tween_property(d.pv, "position", end, 0.3).set_ease(Tween.EASE_IN).set_trans(Tween.TRANS_QUAD)
+		dt2.parallel().tween_property(d.pv, "rotation", pt[3], 0.3)
+	car_burn_age = 0.0
 	# Feuer und Rauch bleiben: laufen über _car_burn() aus echten Bildfolgen
 	car_burn_t = 0.0
 	car_smoke_t = 0.0
@@ -2047,23 +2066,28 @@ func _car_explode() -> void:
 func _car_burn(dt: float) -> void:
 	if not car_dead or car_card.is_empty():
 		return
-	var base: Vector3 = car_card.base + Vector3(0.5, 0.0, -0.75)
+	# Flammen nur ein paar Sekunden und immer kleiner, danach nur noch Qualm, der langsam dünner wird
+	car_burn_age += dt
+	var fk = clampf(1.0 - car_burn_age / 7.0, 0.0, 1.0)
+	var sk = clampf(1.0 - car_burn_age / 40.0, 0.0, 1.0)
+	var base: Vector3 = car_card.base + Vector3(0.25, 0.0, -0.25)
 	car_burn_t -= dt
-	if car_burn_t <= 0.0:
-		car_burn_t = randf_range(0.04, 0.07)
-		var fp = base + Vector3(randf_range(-0.9, 0.9), randf_range(0.5, 0.95), randf_range(-0.1, 0.35))
-		var sz = randf_range(3.0, 4.2)
+	if fk > 0.0 and car_burn_t <= 0.0:
+		car_burn_t = randf_range(0.04, 0.07) / maxf(fk, 0.25)
+		var fp = base + Vector3(randf_range(-0.8, 0.8) * (0.4 + 0.6 * fk), randf_range(0.5, 0.95), randf_range(-0.1, 0.35))
+		var sz = randf_range(3.0, 4.2) * (0.35 + 0.65 * fk)
 		var mi = _fb_quad(["boom0", "boom1", "boom2"][randi() % 3], fp, sz)
 		mi.set_instance_shader_parameter("em", 2.4)
 		fbs.append({"n": mi, "t": 0.0, "dur": randf_range(0.4, 0.6), "g": randf_range(1.2, 1.9), "f0": 2.0, "f1": 8.5})
 	car_smoke_t -= dt
-	if car_smoke_t <= 0.0:
-		car_smoke_t = randf_range(0.28, 0.42)
+	if sk > 0.0 and car_smoke_t <= 0.0:
+		car_smoke_t = randf_range(0.28, 0.42) / maxf(sk, 0.2)
 		var sp = base + Vector3(randf_range(-0.5, 0.5), 1.0, randf_range(-0.2, 0.1))
-		var sm = _fb_quad("smoke5_dark", sp, randf_range(1.6, 2.4))
+		var sm = _fb_quad("smoke5_dark" if car_burn_age < 12.0 else "smoke5", sp, randf_range(1.6, 2.4) * (0.45 + 0.55 * sk))
 		sm.set_instance_shader_parameter("em", 0.0)
 		fbs.append({"n": sm, "t": 0.0, "dur": randf_range(2.6, 3.4), "g": randf_range(0.8, 1.2), "drift": 0.25})
-	car_light.light_energy = 1.6 + 0.9 * randf() if randf() < 0.5 else car_light.light_energy
+	if randf() < 0.5:
+		car_light.light_energy = (1.6 + 0.9 * randf()) * fk
 
 
 func _car_reset() -> void:
@@ -2786,12 +2810,16 @@ func _autotest(dt: float) -> void:
 		at_step = 137
 	elif at_step == 137 and at_t > 16.2:
 		_snap("16_nade_hit")
+		car_burn_age = 20.0
+		at_step = 138
+	elif at_step == 138 and at_t > 18.0:
+		_snap("17_car_smoke")
 		print("after enemy nade health=", health, " round=", stage, " goal=", round_goal, " ammo=", ammo, "/", reserve)
 		weapon = "pistol"
 		ammo = 0
 		reserve = 0
 		grenades = 0
 		at_step = 13
-	elif at_step == 13 and at_t > 18.6:
+	elif at_step == 13 and at_t > 20.4:
 		_snap("09_game_over")
 		get_tree().quit()
