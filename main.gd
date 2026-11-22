@@ -1867,6 +1867,12 @@ func _shoot(p: Vector2) -> void:
 	_flash_light(cam.global_transform * Vector3(0.35, -0.3, -0.6), 3.5, Color(1.0, 0.72, 0.4), 3.0)
 	var targets = (cards + enemies).filter(func(x): return x != wall)
 	var hit = _pick(p, targets)
+	# Gegner und Bonus-Kisten haben Vorrang vor der Kulisse: steht eine Kiste knapp hinter dem Kistenstapel,
+	# soll der Schuss nicht im Holz davor hängen bleiben
+	var live = enemies.filter(func(x): return x.state != "fall" and x.state != "hide" and (x.kind == "card" or x.kind == "box"))
+	var eh = _pick(p, live)
+	if not eh.is_empty():
+		hit = eh
 	# 3) knapp neben der Figur zählt noch als Treffer
 	var hit_enemy = not hit.is_empty() and hit.card.kind == "card" and enemies.has(hit.card) and hit.card.state != "fall"
 	if not hit_enemy and aim_assist > 0.0:
