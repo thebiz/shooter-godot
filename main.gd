@@ -18,7 +18,8 @@ const HOLES = [
 	[0.2037, 0.3114, 0.6068, 0.8377], [0.7011, 0.8101, 0.6068, 0.8377],
 	[0.4494, 0.5532, 0.6242, 0.9858]]
 const ENEMY_H = 1.8
-const ENEMY_H_BACK = 3.3      # hinten in Fenstern und Containern: etwa doppelt so groß, sonst erkennt man sie kaum
+const ENEMY_H_FRONT = 2.5     # vorne hinter Kisten, Auto, Gabelstapler: näher dran, wirkt größer als die im Haus
+const ENEMY_H_BACK = 3.0      # hinten in Fenstern und Containern: etwa doppelt so groß, sonst erkennt man sie kaum
 const MIN_VIS = 1.8          # so lange bleibt jeder Gegner mindestens sichtbar
 const ENEMY_TEX = ["enemy0", "enemy1", "enemy2", "enemy3", "enemy4", "enemy5"]
 const GUN_V = [0.23, 0.23, 0.24, 0.23, 0.23, 0.2]   # Höhe der Pistole im Bild (von oben)
@@ -515,17 +516,17 @@ func _make_world() -> void:
 		var x = ((hh[0] + hh[1]) * 0.5 - 0.5) * FAC_W
 		var ybot = FAC_Y + (1.0 - hh[3]) * fac_h
 		if i == 6:   # Haustür: ganze Figur, fast so hoch wie die Tür
-			slots.append({"pos": Vector3(x, ybot, FAC_Z - 0.3), "mode": "flip", "busy": false, "name": "door", "eh": 2.75})
+			slots.append({"pos": Vector3(x, ybot, FAC_Z - 0.3), "mode": "flip", "busy": false, "name": "door", "eh": 2.5})
 		else:
 			# großer Gegner, Füße unter dem Fensterbrett, Kopf knapp unter dem Sturz
 			var wh = (hh[3] - hh[2]) * fac_h
 			var drop = ENEMY_H_BACK - (wh - 0.1)
 			slots.append({"pos": Vector3(x, ybot - drop, FAC_Z - 0.32), "mode": "flip", "busy": false, "name": "window%d" % i, "box_lift": drop, "eh": ENEMY_H_BACK})
-	slots.append({"pos": Vector3(-2.55, 0.0, -7.4), "mode": "flip", "busy": false, "name": "crates", "partner": "window4"})
+	slots.append({"pos": Vector3(-2.55, 0.0, -7.4), "mode": "flip", "busy": false, "name": "crates", "partner": "window4", "eh": ENEMY_H_FRONT})
 	for sl in slots:
 		if sl.name == "window4":
 			sl.partner = "crates"
-	slots.append({"pos": Vector3(4.25, 0.28, -8.75), "mode": "flip", "busy": false, "name": "car", "box_lift": 1.02})
+	slots.append({"pos": Vector3(4.25, 0.28, -8.75), "mode": "flip", "busy": false, "name": "car", "box_lift": 1.02, "eh": ENEMY_H_FRONT})
 	var street_deco = _make_street_life(fac, fac_h, tree)
 	scenes["street"] = {"deco": street_deco, "cards": cards, "slots": slots, "wall": wall, "car": car_card, "sky": street_sky,
 		"bg": Color(0.86, 0.6, 0.38), "amb": "ambience"}
@@ -601,6 +602,7 @@ func _make_harbor() -> void:
 	var bk = _card("h_stack_back.png", H_W * f, Vector3.ZERO, "room")
 	_adopt(ct.pv, bk.pv, Vector3(H_X * f - H_X, CAM_UP.y + (FAC_Y - CAM_UP.y) * f - FAC_Y, -1.0))
 	bk.static = true
+	bk.mat.render_priority = -10   # Innenräume immer zuerst malen, damit sie keinen Gegner verdecken
 	cards.append(bk)
 	var prop = _card("h_prop.png", 2.7, Vector3(-0.5, -0.04, -10.0), "metal")
 	prop.delay = 0.3
@@ -631,15 +633,19 @@ func _make_harbor() -> void:
 		var x = H_X + ((hh[0] + hh[1]) * 0.5 - 0.5) * H_W
 		var ybot = FAC_Y - sink + (1.0 - hh[3]) * ch
 		var oh = (hh[3] - hh[2]) * ch
-		var eh = 3.1
-		var drop = eh - (oh - 0.08)
-		slots.append({"pos": Vector3(x, ybot - drop, FAC_Z - 0.5), "mode": "flip", "busy": false, "name": n, "eh": eh, "box_lift": drop})
+		if n == "door_tl" or n == "door_tr":
+			# schmaler Türspalt oben: Gegner steht vor der halb offenen Tür auf der Kante, ganz sichtbar
+			slots.append({"pos": Vector3(x, ybot - 0.02, FAC_Z + 0.14), "mode": "flip", "busy": false, "name": n, "eh": oh - 0.05, "box_lift": 0.0})
+		else:
+			var eh = 2.8
+			var drop = eh - (oh - 0.08)
+			slots.append({"pos": Vector3(x, ybot - drop, FAC_Z - 0.5), "mode": "flip", "busy": false, "name": n, "eh": eh, "box_lift": drop})
 	# oben auf dem mittleren Container, hinter der Schiffsschraube, hinter den Paletten, hinter dem Gabelstapler
-	slots.append({"pos": Vector3(H_X, FAC_Y - sink + (1.0 - 0.058) * ch - 0.04, FAC_Z - 0.35), "mode": "flip", "busy": false, "name": "roof", "eh": 2.8})
-	slots.append({"pos": Vector3(0.55, 0.0, -10.4), "mode": "flip", "busy": false, "name": "prop"})
-	slots.append({"pos": Vector3(-2.95, 0.3, -7.4), "mode": "flip", "busy": false, "name": "crates"})
+	slots.append({"pos": Vector3(H_X, FAC_Y - sink + (1.0 - 0.058) * ch - 0.04, FAC_Z - 0.35), "mode": "flip", "busy": false, "name": "roof", "eh": 2.5})
+	slots.append({"pos": Vector3(0.55, 0.0, -10.4), "mode": "flip", "busy": false, "name": "prop", "eh": ENEMY_H_FRONT})
+	slots.append({"pos": Vector3(-2.95, 0.15, -7.4), "mode": "flip", "busy": false, "name": "crates", "eh": ENEMY_H_FRONT})
 	# Gabelstapler-Spot liegt aus Spielersicht vor der rechten unteren Containertür: nie beide gleichzeitig
-	slots.append({"pos": Vector3(4.0, 0.05, -8.75), "mode": "flip", "busy": false, "name": "car", "box_lift": 1.05, "partner": "door_br"})
+	slots.append({"pos": Vector3(4.0, 0.05, -8.75), "mode": "flip", "busy": false, "name": "car", "box_lift": 1.05, "partner": "door_br", "eh": ENEMY_H_FRONT})
 	for sl in slots:
 		if sl.name == "door_br":
 			sl.partner = "car"
@@ -1407,6 +1413,8 @@ func _round_clear() -> void:
 
 
 func _game_over() -> void:
+	if autotest:
+		print("GAMEOVER reason=", over_reason, " health=", health, " ammo=", ammo, "/", reserve, " stage=", stage, " t=", at_t, " break=", break_t)
 	_set_state("over")
 	for pr in projs:
 		if is_instance_valid(pr.n):
@@ -3084,6 +3092,7 @@ func _autotest(dt: float) -> void:
 		_snap("17_car_smoke")
 		print("after enemy nade health=", health, " round=", stage, " goal=", round_goal, " ammo=", ammo, "/", reserve)
 		# Nachbar, Vögel, Zeitung
+		health = 100
 		for e in enemies:
 			if e.state != "fall":
 				e.state = "hide"
@@ -3140,22 +3149,31 @@ func _autotest(dt: float) -> void:
 		spawn_t = 999.0
 		cover = false
 		aim_idx = 99
-		for n in ["door_bl", "door_tl", "door_tr", "roof", "prop", "crates", "car"]:
+		for n in ["door_bl", "door_tl", "door_tr", "roof", "prop", "crates", "door_br"]:
 			var e = _force_enemy(n)
 			e.aim = 99.0
 		at_step = 153
 	elif at_step == 153 and at_t > 31.6:
 		_snap("20_harbor")
+		aim = _vs() * Vector2(0.85, 0.6)
+		at_step = 158
+	elif at_step == 158 and at_t > 31.9:
+		_snap("20r_aim_right")
+		aim = _vs() * Vector2(0.15, 0.3)
+		at_step = 159
+	elif at_step == 159 and at_t > 32.2:
+		_snap("20l_aim_left")
+		aim = _vs() * Vector2(0.5, 0.45)
 		weapon = "shotgun"
 		wpn_ammo = 3
 		for e in enemies:
 			if e.slot.name == "door_bl" and not e.get("box", false):
 				_shoot(cam.unproject_position(e.mi.global_transform * Vector3(0, e.h * 0.6, 0)))
 		at_step = 154
-	elif at_step == 154 and at_t > 31.75:
+	elif at_step == 154 and at_t > 32.45:
 		_snap("20b_shotgun")
 		at_step = 157
-	elif at_step == 157 and at_t > 32.4:
+	elif at_step == 157 and at_t > 33.0:
 		_snap("21_shreds")
 		cover = false
 		for e in enemies:
@@ -3758,27 +3776,32 @@ func _shred(c: Dictionary, point: Vector3, power: String) -> void:
 	# Löcher: (u, v, Radius in Bildhöhe, Zufall)
 	var new_holes = []
 	var frags = []   # [u, v, Größe in m]
+	var k = c.h / 1.8          # Fetzen wachsen mit der Größe des Aufstellers
 	match power:
 		"shotgun":
-			for i in 8:
-				new_holes.append(Vector4(u + randf_range(-0.22, 0.22) / asp * 0.5, v + randf_range(-0.12, 0.12), randf_range(0.022, 0.045), randf() * 9.0))
-			for i in 2:
-				new_holes.append(Vector4(u + randf_range(-0.15, 0.15) / asp * 0.5, v + randf_range(-0.08, 0.08), randf_range(0.06, 0.09), randf() * 9.0))
 			for i in 9:
-				frags.append([u + randf_range(-0.2, 0.2), v + randf_range(-0.12, 0.12), randf_range(0.12, 0.3)])
+				new_holes.append(Vector4(u + randf_range(-0.24, 0.24) / asp * 0.5, v + randf_range(-0.13, 0.13), randf_range(0.03, 0.06), randf() * 9.0))
+			for i in 3:
+				new_holes.append(Vector4(u + randf_range(-0.16, 0.16) / asp * 0.5, v + randf_range(-0.09, 0.09), randf_range(0.08, 0.12), randf() * 9.0))
+			for i in 12:
+				frags.append([u + randf_range(-0.22, 0.22), v + randf_range(-0.14, 0.14), randf_range(0.15, 0.36) * k])
 		"boom", "rocket":
-			for i in 10:
-				new_holes.append(Vector4(randf_range(0.15, 0.85), randf_range(0.08, 0.95), randf_range(0.05, 0.11), randf() * 9.0))
-			for i in 14:
-				frags.append([randf_range(0.15, 0.85), randf_range(0.05, 0.95), randf_range(0.16, 0.38)])
+			for i in 12:
+				new_holes.append(Vector4(randf_range(0.15, 0.85), randf_range(0.08, 0.95), randf_range(0.07, 0.14), randf() * 9.0))
+			for i in 18:
+				frags.append([randf_range(0.15, 0.85), randf_range(0.05, 0.95), randf_range(0.2, 0.45) * k])
 		"smg":
-			new_holes.append(Vector4(u, v, randf_range(0.022, 0.032), randf() * 9.0))
-			for i in 2:
-				frags.append([u + randf_range(-0.05, 0.05), v + randf_range(-0.04, 0.04), randf_range(0.07, 0.13)])
+			new_holes.append(Vector4(u, v, randf_range(0.035, 0.045), randf() * 9.0))
+			new_holes.append(Vector4(u + randf_range(-0.05, 0.05), v + randf_range(-0.05, 0.05), randf_range(0.02, 0.03), randf() * 9.0))
+			for i in 3:
+				frags.append([u + randf_range(-0.05, 0.05), v + randf_range(-0.04, 0.04), randf_range(0.12, 0.22) * k])
 		_:
-			new_holes.append(Vector4(u, v, randf_range(0.03, 0.04), randf() * 9.0))
-			for i in 4:
-				frags.append([u + randf_range(-0.06, 0.06), v + randf_range(-0.05, 0.05), randf_range(0.07, 0.16)])
+			# Pistole: ein großes ausgefranstes Loch, daneben platzt noch ein Stück ab
+			new_holes.append(Vector4(u, v, randf_range(0.045, 0.06), randf() * 9.0))
+			for i in 2:
+				new_holes.append(Vector4(u + randf_range(-0.07, 0.07) / asp * 0.5, v + randf_range(-0.06, 0.06), randf_range(0.022, 0.035), randf() * 9.0))
+			for i in 5:
+				frags.append([u + randf_range(-0.07, 0.07), v + randf_range(-0.06, 0.06), randf_range(0.14, 0.27) * k])
 	c.holes.append_array(new_holes)
 	while c.holes.size() > 16:
 		c.holes.pop_front()
@@ -3811,9 +3834,9 @@ func _shred(c: Dictionary, point: Vector3, power: String) -> void:
 		var pos: Vector3 = xf * Vector3((fu - 0.5) * c.w, (1.0 - fv) * c.h, 0.03)
 		mi.global_position = pos
 		mi.global_rotation = c.mi.global_rotation
-		var k = 1.0 if power in ["pistol", "smg"] else 1.6
-		var vel = away * randf_range(1.0, 3.0) * k + Vector3(randf_range(-1.6, 1.6), randf_range(1.0, 3.2), 0) * k
-		shreds.append({"mi": mi, "vel": vel, "av": Vector3(randf_range(-9, 9), randf_range(-9, 9), randf_range(-9, 9)), "t": 0.0, "life": randf_range(1.6, 2.6), "rest": false})
+		var pk = 1.0 if power in ["pistol", "smg"] else 1.5
+		var vel = away * randf_range(1.5, 3.5) * pk + Vector3(randf_range(-2.0, 2.0), randf_range(1.5, 3.6), 0) * pk
+		shreds.append({"mi": mi, "vel": vel, "av": Vector3(randf_range(-8, 8), randf_range(-8, 8), randf_range(-8, 8)), "t": 0.0, "life": randf_range(2.4, 3.4), "rest": false})
 	# ein paar Farbspritzer wie von einer Farbpatrone
 	fx_k = clampf(point.distance_to(cam.global_position) / 7.0, 0.22, 1.3)
 	var nrm: Vector3 = -away
@@ -3835,7 +3858,7 @@ func _shreds_update(dt: float) -> void:
 			continue
 		if not f.rest:
 			f.vel.y -= 7.5 * dt
-			f.vel *= exp(-dt * 1.4)          # Luftwiderstand: Pappe segelt
+			f.vel *= exp(-dt * 1.0)          # Luftwiderstand: Pappe segelt
 			f.mi.global_position += f.vel * dt
 			f.mi.rotate_x(f.av.x * dt)
 			f.mi.rotate_y(f.av.y * dt)
