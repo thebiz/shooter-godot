@@ -3467,7 +3467,7 @@ func _autotest(dt: float) -> void:
 		print("MOTEL scene=", scene, " stage=", stage, " slots=", slots.size(), " goal=", round_goal)
 		spawn_t = 999.0
 		cover = false
-		for n in ["up1", "up2", "door", "win", "crates"]:
+		for n in ["up1", "up2", "door", "win", "crates", "car"]:
 			var e = _force_enemy(n)
 			e.aim = 99.0
 		at_step = 172
@@ -4277,6 +4277,7 @@ func _atmo_update(dt: float) -> void:
 
 const MO_W = 18.0
 const MO_X = -0.8
+const CW = 8.1               # Streifenwagen (50 % größer)
 const MO_HOLES = {"up1": [0.3241, 0.4087, 0.1443, 0.4216], "up2": [0.7621, 0.8399, 0.1488, 0.4216],
 	"door": [0.4081, 0.4769, 0.5727, 0.8929], "win": [0.8095, 0.8754, 0.5750, 0.7621]}
 var cop_red: OmniLight3D
@@ -4328,22 +4329,22 @@ func _make_motel() -> void:
 	room.position = Vector3(0, 0, -0.85)
 	mo.pv.add_child(room)
 	cards.append({"pv": mo.pv, "mi": room, "mat": rm, "img": null, "w": MO_W, "h": mh, "kind": "room", "t": 99.0, "delay": 0.0, "up": true, "static": true})
-	var cop = _card("m_cop.png", 5.4, Vector3(-7.7, -0.04, -9.8), "metal")
+	var cop = _card("m_cop.png", CW, Vector3(-7.7, -0.04, -9.8), "metal")
 	cop.delay = 0.25
 	cards.append(cop)
 	var sign = _card("m_sign.png", 3.0, Vector3(7.6, -0.05, -11.8), "metal")
 	sign.delay = 0.4
 	cards.append(sign)
-	var cop2 = _card("m_cop2.png", 5.4, Vector3(8.0, -0.04, -12.3), "metal")
+	var cop2 = _card("m_cop2.png", CW, Vector3(8.4, -0.04, -12.3), "metal")
 	cop2.delay = 0.5
 	cards.append(cop2)
-	var pk = _card("m_pickup.png", 3.8, Vector3(4.5, -0.04, -8.4), "metal")
+	var pk = _card("m_pickup.png", 5.7, Vector3(5.2, -0.04, -8.4), "metal")
 	pk.delay = 0.6
 	pk.base = pk.pv.position
 	pk.label = "PICKUP"
-	pk.debris = [["m_deb_tire.png", 0.62, Vector3(-1.2, 0.0, 0.5), Vector3(0.0, 0.3, -0.1)],
-		["m_deb_mirror.png", 0.3, Vector3(-2.1, 0.0, 0.6), Vector3(-PI * 0.4, 0.6, 0.0)],
-		["m_deb_light.png", 0.25, Vector3(-2.8, 0.0, 0.4), Vector3(-PI * 0.45, 0.9, 0.0)]]
+	pk.debris = [["m_deb_tire.png", 0.9, Vector3(-1.2, 0.0, 0.5), Vector3(0.0, 0.3, -0.1)],
+		["m_deb_mirror.png", 0.42, Vector3(-2.1, 0.0, 0.6), Vector3(-PI * 0.4, 0.6, 0.0)],
+		["m_deb_light.png", 0.36, Vector3(-2.8, 0.0, 0.4), Vector3(-PI * 0.45, 0.9, 0.0)]]
 	cards.append(pk)
 	var tr = _card("m_trash.png", 4.6, Vector3(-4.3, -0.04, -7.0), "metal")
 	tr.delay = 0.8
@@ -4360,11 +4361,12 @@ func _make_motel() -> void:
 		var oh = (hh[3] - hh[2]) * mh
 		if n == "win":
 			var drop = 3.0 - (oh - 0.1)
-			slots.append({"pos": Vector3(x, ybot - drop, FAC_Z - 0.32), "mode": "flip", "busy": false, "name": n, "eh": 3.0, "box_lift": drop, "partner": "car"})
+			slots.append({"pos": Vector3(x, ybot - drop, FAC_Z - 0.32), "mode": "flip", "busy": false, "name": n, "eh": 3.0, "box_lift": drop})
 		else:
 			slots.append({"pos": Vector3(x, ybot - 0.02, FAC_Z - 0.3), "mode": "flip", "busy": false, "name": n, "eh": oh - 0.06, "box_lift": 0.0})
 	slots.append({"pos": Vector3(-3.1, 0.2, -7.4), "mode": "flip", "busy": false, "name": "crates", "eh": ENEMY_H_FRONT})
-	slots.append({"pos": Vector3(4.0, 0.05, -8.75), "mode": "flip", "busy": false, "name": "car", "box_lift": 1.1, "partner": "win", "eh": ENEMY_H_FRONT})
+	# vorne seitlich an der Motorhaube des Pickups, gut sichtbar
+	slots.append({"pos": Vector3(2.05, 0.0, -8.7), "mode": "flip", "busy": false, "name": "car", "box_lift": 1.25, "eh": ENEMY_H_FRONT})
 	var deco = _make_motel_life(mo, mh, sink, sign)
 	scenes["motel"] = {"deco": deco, "cards": cards, "slots": slots, "wall": cov, "car": pk, "sky": sky.pv,
 		"bg": Color(0.3, 0.18, 0.2), "amb": "ambience_motel"}
@@ -4379,19 +4381,19 @@ func _make_motel_life(mo: Dictionary, mh: float, sink: float, sign: Dictionary) 
 	cop_red.light_color = Color(1.0, 0.12, 0.08)
 	cop_red.omni_range = 15.0
 	cop_red.light_energy = 0.0
-	cop_red.position = Vector3(-8.3, 2.3, -8.6)
+	cop_red.position = Vector3(-8.5, 3.0, -8.6)
 	deco.add_child(cop_red)
 	cop_blue = OmniLight3D.new()
 	cop_blue.light_color = Color(0.15, 0.35, 1.0)
 	cop_blue.omni_range = 15.0
 	cop_blue.light_energy = 0.0
-	cop_blue.position = Vector3(-7.7, 2.3, -8.6)
+	cop_blue.position = Vector3(-7.9, 3.0, -8.6)
 	deco.add_child(cop_blue)
 	# Lichtbalken auf den Dächern (Glühpunkte)
-	var bar_h = 5.4 * 674.0 / 1954.0 * (1.0 - 0.075)
-	for sp in [[-7.7 + (0.405 - 0.5) * 5.4, "r"], [-7.7 + (0.46 - 0.5) * 5.4, "b"], [8.0 + (0.5 - 0.405) * 5.4, "r"], [8.0 + (0.5 - 0.46) * 5.4, "b"]]:
+	var bar_h = CW * 674.0 / 1954.0 * (1.0 - 0.075)
+	for sp in [[-7.7 + (0.405 - 0.5) * CW, "r"], [-7.7 + (0.46 - 0.5) * CW, "b"], [8.4 + (0.5 - 0.405) * CW, "r"], [8.4 + (0.5 - 0.46) * CW, "b"]]:
 		var z = -9.7 if sp[0] < 0 else -12.2
-		var mi = _glow_node(deco, gl, Vector3(sp[0], bar_h, z), 1.4, Color(1.0, 0.15, 0.1) if sp[1] == "r" else Color(0.2, 0.4, 1.0))
+		var mi = _glow_node(deco, gl, Vector3(sp[0], bar_h, z), 2.0, Color(1.0, 0.15, 0.1) if sp[1] == "r" else Color(0.2, 0.4, 1.0))
 		cop_glows.append({"mi": mi, "c": sp[1], "ph": 0.0 if sp[0] < 0 else 0.37})
 	# Neonschild: MOTEL-Schriftzug flackert ab und zu, der Stern leuchtet ruhig
 	var sw = 3.0
