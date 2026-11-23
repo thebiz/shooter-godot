@@ -790,7 +790,7 @@ func _music_apply() -> void:
 		music.volume_db = -80.0
 		return
 	var base = linear_to_db(music_vol)
-	music.volume_db = lerpf(base - 14.0, base + 13.0, music_k)
+	music.volume_db = lerpf(base - 14.0, base + 13.0, music_k) - 60.0 * snd_duck * snd_duck
 
 
 # Spruch eines Gegners, kommt räumlich von seiner Position
@@ -1728,6 +1728,8 @@ func _process(dt: float) -> void:
 	panel_k = move_toward(panel_k, 1.0 if (panel_open and state == "play") else 0.0, dt / 0.18)
 	var mk_target = 0.0 if (state == "play" or state == "intro") else 1.0
 	music_k = move_toward(music_k, mk_target, dt / (1.2 if mk_target < music_k else 3.0))
+	# Klang-Fenster offen: Musik ausblenden, damit man Hall und Entfernung hört (abschaltbar)
+	snd_duck = move_toward(snd_duck, 1.0 if (snd_open and not snd_music) else 0.0, dt / 0.5)
 	_music_apply()
 	if state != "play":
 		editing = false
@@ -3589,6 +3591,7 @@ func _autotest(dt: float) -> void:
 		_press(_title_btn_rect(0).get_center())
 		at_step = 17
 	elif at_step == 17 and at_t > 51.4:
+		print("MUSIC duck=", snd_duck, " vol=", music.volume_db)
 		_snap("33_sound")
 		# senkrecht wischen über einem Regler: darf nur scrollen
 		var t = _snd_track(2)
@@ -3621,7 +3624,7 @@ func _autotest(dt: float) -> void:
 		at_step = 18
 	elif at_step == 18 and at_t > 51.8:
 		_snap("34_sound_scrolled")
-		_press(_snd_hdr_btn(1).get_center())
+		_press(_snd_hdr_btn(2).get_center())
 		pad_pt = Vector2(0.55, 0.5)
 		at_step = 19
 	elif at_step == 19 and at_t > 52.3:
@@ -4679,7 +4682,8 @@ const SND = [
 	{"label": "DISTANCE FALLOFF", "hint": "how fast voices fade with distance", "key": "snd_fall", "min": 0.0, "max": 1.0, "def": 0.5},
 	{"label": "LEFT / RIGHT", "hint": "how strongly voices pan", "key": "snd_pan", "min": 0.0, "max": 2.0, "def": 1.6},
 	{"label": "ENEMY VOICES", "hint": "volume", "key": "snd_vol_far", "min": -18.0, "max": 12.0, "def": 0.0},
-	{"label": "MEGAPHONE", "hint": "volume of your police voice", "key": "snd_vol_mega", "min": -18.0, "max": 12.0, "def": 3.0}]
+	{"label": "MEGAPHONE", "hint": "volume of your police voice", "key": "snd_vol_mega", "min": -18.0, "max": 12.0, "def": 3.0},
+	{"label": "MUSIC", "hint": "background music", "key": "music_vol", "min": 0.0, "max": 1.0, "def": 0.5}]
 var snd_room = 0.35
 var snd_wet = 0.2
 var snd_bright = 0.4
@@ -4690,6 +4694,8 @@ var snd_pan = 1.6
 var snd_vol_far = 0.0
 var snd_vol_mega = 3.0
 var snd_open = false
+var snd_music = false       # Musik beim Einstellen weiterlaufen lassen
+var snd_duck = 0.0
 var snd_scroll = 0.0
 var snd_touch = {}
 var far_bus = -1
@@ -4757,17 +4763,17 @@ func _snd_rect() -> Rect2:
 
 func _snd_list_rect() -> Rect2:
 	var r = _snd_rect()
-	return Rect2(r.position.x + 20, r.position.y + 84, r.size.x - 40, r.size.y - 100)
+	return Rect2(r.position.x + 20, r.position.y + 84, r.size.x - 40, r.size.y - 118)
 
 
 func _snd_hdr_btn(i: int) -> Rect2:
 	var r = _snd_rect()
 	var n = _snd_hdr_labels().size()
-	return Rect2(r.end.x - 20 - (n - i) * 112, r.position.y + 18, 104, 48)
+	return Rect2(r.end.x - 20 - (n - i) * 104, r.position.y + 18, 96, 48)
 
 
 func _snd_hdr_labels() -> Array:
-	return ["TEST", "3D", "RESET", "DONE"] if snd_view == "list" else [("STOP" if pad_orbit else "ORBIT"), "BACK"]
+	return [("MUSIC: ON" if snd_music else "MUSIC: OFF"), "TEST", "3D", "RESET", "DONE"] if snd_view == "list" else [("STOP" if pad_orbit else "ORBIT"), "BACK"]
 
 
 func _snd_max_scroll() -> float:
@@ -4799,6 +4805,7 @@ func _snd_set(i: int, v: float) -> void:
 	var stp = (sd.max - sd.min) / 40.0
 	set(sd.key, clampf(snappedf(v, stp), sd.min, sd.max))
 	_audio_apply()
+	_music_apply()
 
 
 func _snd_press(p: Vector2, idx: int) -> void:
@@ -4820,6 +4827,8 @@ func _snd_press(p: Vector2, idx: int) -> void:
 				"DONE":
 					snd_open = false
 					_save()
+				"MUSIC: ON", "MUSIC: OFF":
+					snd_music = not snd_music
 				"ORBIT", "STOP":
 					pad_orbit = not pad_orbit
 					if pad_orbit and pad_pt.length() < 0.25:
@@ -4918,7 +4927,7 @@ func _snd_draw(c: Control) -> void:
 		bs.set_border_width_all(1)
 		bs.set_corner_radius_all(24)
 		c.draw_style_box(bs, b)
-		_text(c, Vector2(b.position.x, b.position.y + 31), labels[i], 17, Color(0.1, 0.07, 0.03) if hot else Color.WHITE, HORIZONTAL_ALIGNMENT_CENTER, b.size.x, font_light)
+		_text(c, Vector2(b.position.x, b.position.y + 31), labels[i], 14 if labels[i].begins_with("MUSIC") else 17, Color(0.1, 0.07, 0.03) if hot else Color.WHITE, HORIZONTAL_ALIGNMENT_CENTER, b.size.x, font_light)
 	if snd_view == "space":
 		_pad_draw(c, r)
 		return
@@ -4928,14 +4937,17 @@ func _snd_draw(c: Control) -> void:
 		if y + SND_ROW < lr.position.y - 2 or y > lr.end.y:
 			continue
 		# Zeilen am Rand ausblenden statt hart abschneiden
-		var a = clampf(minf((y + SND_ROW - lr.position.y) / 30.0, (lr.end.y - y) / 30.0), 0.0, 1.0)
+		# nur Zeilen zeigen, die (fast) ganz im Listenbereich liegen; am Rand weich ausblenden
+		var a = clampf(minf((y - lr.position.y + 24.0) / 24.0, (lr.end.y - (y + SND_ROW) + 24.0) / 24.0), 0.0, 1.0)
 		if a <= 0.02:
 			continue
 		var sd = SND[i]
 		var val: float = get(sd.key)
 		var k = clampf((val - sd.min) / (sd.max - sd.min), 0, 1)
 		var vt: String
-		if sd.key.begins_with("snd_vol"):
+		if sd.key == "music_vol":
+			vt = "OFF" if val <= 0.001 else "%d %%" % roundi(val * 100.0)
+		elif sd.key.begins_with("snd_vol"):
 			vt = "%+.0f dB" % val
 		elif sd.key == "snd_pre":
 			vt = "%d ms" % roundi(val)
@@ -4962,7 +4974,7 @@ func _snd_draw(c: Control) -> void:
 		var h = lr.size.y * lr.size.y / (lr.size.y + ms)
 		var y0 = lr.position.y + (lr.size.y - h) * snd_scroll / ms
 		c.draw_line(Vector2(r.end.x - 8, y0), Vector2(r.end.x - 8, y0 + h), Color(1, 1, 1, 0.35), 4.0, true)
-	_text(c, Vector2(r.position.x, r.end.y - 6), "Swipe up/down to scroll  ·  drag sideways to change a value", 12, Color(1, 1, 1, 0.45), HORIZONTAL_ALIGNMENT_CENTER, r.size.x, font_light)
+	_text(c, Vector2(r.position.x, r.end.y - 10), "Swipe up/down to scroll  ·  drag sideways to change a value", 12, Color(1, 1, 1, 0.45), HORIZONTAL_ALIGNMENT_CENTER, r.size.x, font_light)
 
 
 
