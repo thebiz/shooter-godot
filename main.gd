@@ -765,6 +765,13 @@ func _make_sounds() -> void:
 	AudioServer.add_bus_effect(fb, rv)
 	AudioServer.set_bus_volume_db(fb, -2.0)
 	far_bus = fb
+	# Raumklang-Test: eigener Kanal, der vor dem Hall-Kanal noch "hinten" dumpfer macht
+	var sb = AudioServer.bus_count
+	AudioServer.add_bus(sb)
+	AudioServer.set_bus_name(sb, "Space")
+	AudioServer.set_bus_send(sb, "Far")
+	AudioServer.add_bus_effect(sb, AudioEffectLowPassFilter.new())
+	pad_bus = sb
 	music = AudioStreamPlayer.new()
 	music.bus = "Music"
 	music.stream = sounds.get("music")
@@ -1772,6 +1779,7 @@ func _process(dt: float) -> void:
 	_life_update(dt)
 	_shreds_update(dt)
 	_shadows_update()
+	_pad_update(dt)
 	_car_burn(dt)
 	_camera_update(dt)
 	if autotest:
@@ -2266,6 +2274,8 @@ func _input(ev: InputEvent) -> void:
 		if ev.index == ui_idx:
 			if ui_drag == "snd":
 				_snd_drag(ev.position)
+			elif ui_drag == "pad":
+				_pad_set(ev.position)
 			elif ui_drag.begins_with("slider"):
 				_slider_set(int(ui_drag.substr(6)), ev.position.x)
 			elif ui_drag == "thumb":
@@ -3611,6 +3621,17 @@ func _autotest(dt: float) -> void:
 		at_step = 18
 	elif at_step == 18 and at_t > 51.8:
 		_snap("34_sound_scrolled")
+		_press(_snd_hdr_btn(1).get_center())
+		pad_pt = Vector2(0.55, 0.5)
+		at_step = 19
+	elif at_step == 19 and at_t > 52.3:
+		print("PAD view=", snd_view, " on=", pad_on, " pos=", pad_player.global_position if pad_player else null, " cam=", cam.global_position)
+		_snap("35_sound_3d")
+		_press(_snd_hdr_btn(0).get_center())
+		at_step = 20
+	elif at_step == 20 and at_t > 53.3:
+		print("PAD orbit=", pad_orbit, " pt=", pad_pt)
+		_snap("36_sound_orbit")
 		get_tree().quit()
 
 
@@ -4741,7 +4762,12 @@ func _snd_list_rect() -> Rect2:
 
 func _snd_hdr_btn(i: int) -> Rect2:
 	var r = _snd_rect()
-	return Rect2(r.end.x - 20 - (3 - i) * 128, r.position.y + 18, 118, 48)
+	var n = _snd_hdr_labels().size()
+	return Rect2(r.end.x - 20 - (n - i) * 112, r.position.y + 18, 104, 48)
+
+
+func _snd_hdr_labels() -> Array:
+	return ["TEST", "3D", "RESET", "DONE"] if snd_view == "list" else [("STOP" if pad_orbit else "ORBIT"), "BACK"]
 
 
 func _snd_max_scroll() -> float:
@@ -4776,20 +4802,39 @@ func _snd_set(i: int, v: float) -> void:
 
 
 func _snd_press(p: Vector2, idx: int) -> void:
-	for i in 3:
+	var labels = _snd_hdr_labels()
+	for i in labels.size():
 		if _snd_hdr_btn(i).has_point(p):
-			match i:
-				0:
+			match labels[i]:
+				"TEST":
 					_snd_test()
-				1:
+				"3D":
+					snd_view = "space"
+					pad_orbit = false
+					_pad_start()
+				"RESET":
 					for sd in SND:
 						set(sd.key, sd.def)
 					_audio_apply()
 					_save()
-				2:
+				"DONE":
 					snd_open = false
 					_save()
+				"ORBIT", "STOP":
+					pad_orbit = not pad_orbit
+					if pad_orbit and pad_pt.length() < 0.25:
+						pad_pt = Vector2(0, -0.45)
+				"BACK":
+					snd_view = "list"
+					_pad_stop()
 			return
+	if snd_view == "space":
+		if p.distance_to(_pad_center()) < _pad_radius() + 30:
+			ui_idx = idx
+			ui_drag = "pad"
+			pad_orbit = false
+			_pad_set(p)
+		return
 	if _snd_list_rect().has_point(p):
 		ui_idx = idx
 		ui_drag = "snd"
@@ -4862,16 +4907,21 @@ func _snd_draw(c: Control) -> void:
 	c.draw_rect(Rect2(Vector2.ZERO, vs), Color(0, 0, 0, 0.5))
 	var r = _snd_rect()
 	_panel(c, r, 0.9)
-	_text(c, Vector2(r.position.x + 24, r.position.y + 50), "SOUND", 26, Color(1, 0.92, 0.8))
-	for i in 3:
+	_text(c, Vector2(r.position.x + 24, r.position.y + 50), "SOUND" if snd_view == "list" else "3D TEST", 26, Color(1, 0.92, 0.8))
+	var labels = _snd_hdr_labels()
+	for i in labels.size():
 		var b = _snd_hdr_btn(i)
+		var hot = labels[i] == "DONE" or labels[i] == "BACK"
 		var bs = StyleBoxFlat.new()
-		bs.bg_color = Color(1, 0.78, 0.3, 0.95) if i == 2 else Color(1, 1, 1, 0.1)
+		bs.bg_color = Color(1, 0.78, 0.3, 0.95) if hot else Color(1, 1, 1, 0.1)
 		bs.border_color = Color(1, 1, 1, 0.35)
 		bs.set_border_width_all(1)
 		bs.set_corner_radius_all(24)
 		c.draw_style_box(bs, b)
-		_text(c, Vector2(b.position.x, b.position.y + 31), ["TEST", "RESET", "DONE"][i], 17, Color(0.1, 0.07, 0.03) if i == 2 else Color.WHITE, HORIZONTAL_ALIGNMENT_CENTER, b.size.x, font_light)
+		_text(c, Vector2(b.position.x, b.position.y + 31), labels[i], 17, Color(0.1, 0.07, 0.03) if hot else Color.WHITE, HORIZONTAL_ALIGNMENT_CENTER, b.size.x, font_light)
+	if snd_view == "space":
+		_pad_draw(c, r)
+		return
 	var lr = _snd_list_rect()
 	for i in SND.size():
 		var y = _snd_row_y(i)
@@ -4913,3 +4963,132 @@ func _snd_draw(c: Control) -> void:
 		var y0 = lr.position.y + (lr.size.y - h) * snd_scroll / ms
 		c.draw_line(Vector2(r.end.x - 8, y0), Vector2(r.end.x - 8, y0 + h), Color(1, 1, 1, 0.35), 4.0, true)
 	_text(c, Vector2(r.position.x, r.end.y - 6), "Swipe up/down to scroll  ·  drag sideways to change a value", 12, Color(1, 1, 1, 0.45), HORIZONTAL_ALIGNMENT_CENTER, r.size.x, font_light)
+
+
+
+# ---------------------------------------------------------------------------
+# 3D-Test: Kreis mit deinem Kopf in der Mitte. Punkt ziehen = Stimme kommt von dort (vorne, hinten, links,
+# rechts, nah, weit). ORBIT lässt sie um dich kreisen wie beim Hubschraubertest.
+# Hinten wird angenähert: dumpfer und etwas leiser (echtes Vorne/Hinten bräuchte HRTF mit Kopfhörern).
+
+var snd_view = "list"
+var pad_pt = Vector2(0, -0.45)     # -1..1, oben = vorne
+var pad_orbit = false
+var pad_player: AudioStreamPlayer3D
+var pad_bus = -1
+var pad_on = false
+
+
+func _pad_center() -> Vector2:
+	var r = _snd_rect()
+	return Vector2(r.get_center().x, r.position.y + 84 + (r.size.y - 120) * 0.5)
+
+
+func _pad_radius() -> float:
+	return minf(220.0, (_snd_rect().size.y - 150) * 0.5)
+
+
+func _pad_set(p: Vector2) -> void:
+	var v = (p - _pad_center()) / _pad_radius()
+	if v.length() > 1.0:
+		v = v.normalized()
+	pad_pt = v
+
+
+func _pad_dist() -> float:
+	return lerpf(1.2, 30.0, pow(clampf(pad_pt.length(), 0, 1), 1.6))
+
+
+func _pad_start() -> void:
+	pad_on = true
+	_pad_next()
+
+
+func _pad_stop() -> void:
+	pad_on = false
+	pad_orbit = false
+	if pad_player != null and is_instance_valid(pad_player):
+		pad_player.queue_free()
+	pad_player = null
+
+
+# immer wieder eine andere Gegnerstimme, kurze Pause dazwischen
+func _pad_next() -> void:
+	if not pad_on:
+		return
+	if pad_player != null and is_instance_valid(pad_player):
+		pad_player.queue_free()
+	var pool = []
+	for cat in ["appear", "taunt", "fire"]:
+		for v in ["A", "B", "C", "D"]:
+			pool.append_array(voices.get(cat, {}).get(v, []))
+	if pool.is_empty():
+		return
+	pad_player = AudioStreamPlayer3D.new()
+	pad_player.stream = pool[randi() % pool.size()]
+	pad_player.bus = "Space"
+	pad_player.max_db = 6.0
+	add_child(pad_player)
+	_pad_update(0.0)
+	pad_player.play()
+	pad_player.finished.connect(func():
+		get_tree().create_timer(0.35).timeout.connect(_pad_next))
+
+
+func _pad_update(dt: float) -> void:
+	if not pad_on or pad_player == null or not is_instance_valid(pad_player):
+		return
+	if not snd_open or snd_view != "space":
+		_pad_stop()
+		return
+	if pad_orbit:
+		var a = pad_pt.angle() + dt * 1.1
+		var rr = maxf(pad_pt.length(), 0.25)
+		pad_pt = Vector2.from_angle(a) * rr
+	var d = _pad_dist()
+	var dir = pad_pt.normalized() if pad_pt.length() > 0.01 else Vector2(0, -1)
+	var xf: Transform3D = cam.global_transform
+	var flat_fwd = Vector3(-xf.basis.z.x, 0, -xf.basis.z.z).normalized()
+	var flat_right = Vector3(xf.basis.x.x, 0, xf.basis.x.z).normalized()
+	pad_player.global_position = xf.origin + flat_right * dir.x * d - flat_fwd * dir.y * d
+	# gleiche Einstellungen wie die Gegnerstimmen
+	pad_player.unit_size = lerpf(14.0, 3.0, snd_fall)
+	pad_player.volume_db = 7.0 + snd_vol_far
+	pad_player.panning_strength = snd_pan
+	pad_player.attenuation_filter_cutoff_hz = lerpf(12000.0, 3000.0, snd_muffle)
+	pad_player.attenuation_filter_db = lerpf(-2.0, -18.0, snd_muffle)
+	# hinten: dumpfer und leiser
+	var behind = clampf(dir.y, 0.0, 1.0) * clampf(pad_pt.length() * 4.0, 0.0, 1.0)
+	if pad_bus >= 0:
+		var lp: AudioEffectLowPassFilter = AudioServer.get_bus_effect(pad_bus, 0)
+		lp.cutoff_hz = exp(lerpf(log(20000.0), log(2200.0), behind))
+		AudioServer.set_bus_volume_db(pad_bus, -4.0 * behind)
+
+
+func _pad_draw(c: Control, r: Rect2) -> void:
+	var ce = _pad_center()
+	var rad = _pad_radius()
+	# Entfernungsringe
+	for m in [5.0, 10.0, 20.0, 30.0]:
+		var k = pow((m - 1.2) / (30.0 - 1.2), 1.0 / 1.6)
+		c.draw_arc(ce, rad * k, 0, TAU, 72, Color(1, 1, 1, 0.12 if m < 30.0 else 0.35), 1.5, true)
+		_text(c, Vector2(ce.x + 6, ce.y - rad * k - 4), "%d m" % int(m), 12, Color(1, 1, 1, 0.45), HORIZONTAL_ALIGNMENT_LEFT, -1, font_light)
+	c.draw_line(ce - Vector2(rad, 0), ce + Vector2(rad, 0), Color(1, 1, 1, 0.1), 1.0)
+	c.draw_line(ce - Vector2(0, rad), ce + Vector2(0, rad), Color(1, 1, 1, 0.1), 1.0)
+	_text(c, Vector2(ce.x - 100, ce.y - rad - 30), "FRONT", 15, Color(1, 0.86, 0.55, 0.9), HORIZONTAL_ALIGNMENT_CENTER, 200, font_light)
+	_text(c, Vector2(ce.x - 100, ce.y + rad + 26), "BEHIND", 15, Color(1, 1, 1, 0.6), HORIZONTAL_ALIGNMENT_CENTER, 200, font_light)
+	_text(c, Vector2(ce.x - rad - 40, ce.y + 6), "L", 18, Color(1, 1, 1, 0.7), HORIZONTAL_ALIGNMENT_CENTER, 30)
+	_text(c, Vector2(ce.x + rad + 10, ce.y + 6), "R", 18, Color(1, 1, 1, 0.7), HORIZONTAL_ALIGNMENT_CENTER, 30)
+	# Kopf mit Nase nach vorne
+	c.draw_circle(ce, 18.0, Color(1, 1, 1, 0.85))
+	c.draw_colored_polygon(PackedVector2Array([ce + Vector2(-7, -15), ce + Vector2(7, -15), ce + Vector2(0, -27)]), Color(1, 1, 1, 0.85))
+	c.draw_circle(ce + Vector2(-18, 0), 5.0, Color(1, 1, 1, 0.85))
+	c.draw_circle(ce + Vector2(18, 0), 5.0, Color(1, 1, 1, 0.85))
+	# Schallquelle
+	var sp = ce + pad_pt * rad
+	c.draw_line(ce, sp, Color(1, 0.78, 0.45, 0.35), 2.0, true)
+	var pulse = 1.0 + 0.15 * sin(life_t * 8.0)
+	c.draw_circle(sp, 20.0 * pulse, Color(1, 0.78, 0.45, 0.3))
+	c.draw_circle(sp, 11.0, Color(1, 0.8, 0.45))
+	_text(c, Vector2(sp.x + 18, sp.y - 14), "%d m" % roundi(_pad_dist()), 14, Color(1, 0.9, 0.7), HORIZONTAL_ALIGNMENT_LEFT, -1, font_light)
+	_text(c, Vector2(r.position.x, r.end.y - 6), "Drag the dot anywhere around your head  ·  use headphones  ·  behind is simulated (duller)", 12, Color(1, 1, 1, 0.5), HORIZONTAL_ALIGNMENT_CENTER, r.size.x, font_light)
