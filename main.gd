@@ -240,6 +240,7 @@ func _ready() -> void:
 	_make_world()
 	_make_sounds()
 	_make_hud()
+	_audio_apply()
 	_upd_check()
 	_set_state("title")
 	for c in cards:
@@ -763,6 +764,7 @@ func _make_sounds() -> void:
 	rv.predelay_msec = 40.0
 	AudioServer.add_bus_effect(fb, rv)
 	AudioServer.set_bus_volume_db(fb, -2.0)
+	far_bus = fb
 	music = AudioStreamPlayer.new()
 	music.bus = "Music"
 	music.stream = sounds.get("music")
@@ -805,21 +807,7 @@ func _bark(e: Dictionary, cat: String, chance: float = 1.0, delay: float = 0.0, 
 	var go = func():
 		if not is_instance_valid(e.pv):
 			return
-		var p = AudioStreamPlayer3D.new()
-		p.stream = stream
-		# räumlich: Richtung (links/rechts) deutlich, weiter weg leiser und dumpfer
-		p.bus = "Far"
-		p.unit_size = 6.5
-		p.volume_db = 7.0
-		p.max_db = 6.0
-		p.panning_strength = 1.6
-		p.pitch_scale = randf_range(0.97, 1.03)
-		p.attenuation_filter_cutoff_hz = 7000.0
-		p.attenuation_filter_db = -10.0
-		add_child(p)
-		p.global_position = e.mi.global_transform * Vector3(0, e.h * 0.85, 0)
-		p.finished.connect(p.queue_free)
-		p.play()
+		_far_voice(stream, e.mi.global_transform * Vector3(0, e.h * 0.85, 0), randf_range(0.97, 1.03))
 	if delay > 0.0:
 		get_tree().create_timer(delay).timeout.connect(go)
 	else:
@@ -857,6 +845,7 @@ class HudDraw extends Control:
 	var g   # Hauptszene
 	func _draw() -> void:
 		g._hud_draw(self)
+		g._snd_draw(self)
 
 
 func _make_hud() -> void:
@@ -929,7 +918,7 @@ func _nade_center() -> Vector2:
 
 func _frozen() -> bool:
 	# Einstell-Leiste offen oder Knöpfe verschieben: Gegner warten
-	return panel_k > 0.02 or editing
+	return panel_k > 0.02 or editing or snd_open
 
 
 func _tab_rect() -> Rect2:
@@ -939,7 +928,7 @@ func _tab_rect() -> Rect2:
 
 func _panel_rect() -> Rect2:
 	var vs = _vs()
-	return Rect2(vs.x - PANEL_W * panel_k, 64, PANEL_W, 524)
+	return Rect2(vs.x - PANEL_W * panel_k, 48, PANEL_W, 578)
 
 
 func _slider_rect(i: int) -> Rect2:
@@ -949,6 +938,10 @@ func _slider_rect(i: int) -> Rect2:
 
 func _panel_btn_rect(i: int) -> Rect2:
 	var pr = _panel_rect()
+	# die letzten beiden (Sound, Menü) nebeneinander
+	if i >= 3:
+		var hw = (PANEL_W - 44 - 10) * 0.5
+		return Rect2(pr.position.x + 22 + (i - 3) * (hw + 10), pr.position.y + 362 + 3 * 54, hw, 44)
 	return Rect2(pr.position.x + 22, pr.position.y + 362 + i * 54, PANEL_W - 44, 44)
 
 
@@ -996,6 +989,11 @@ func _ui_press(p: Vector2, idx: int) -> bool:
 			panel_open = false
 			cover = true
 			aim_idx = -1
+		elif _panel_btn_rect(3).has_point(p):
+			snd_open = true
+			panel_open = false
+		elif _panel_btn_rect(4).has_point(p):
+			_quit_to_menu()
 		elif _panel_btn_rect(2).has_point(p):
 			aim_mode = "snap"
 			aim_sens = 1.7
@@ -1172,6 +1170,11 @@ func _hud_draw(c: Control) -> void:
 				c.draw_rect(Rect2(r.position + Vector2(14, r.size.y - 5), Vector2(r.size.x - 28, 3)), Color(1, 0.8, 0.35, 0.9 * a))
 			_text(c, Vector2(r.position.x, r.position.y + 40), MODE_NAMES[m], 30, Color(1, 0.95, 0.86, a), HORIZONTAL_ALIGNMENT_CENTER, r.size.x)
 			_text(c, Vector2(r.position.x, r.position.y + 62), subs[m], 14, Color(1, 1, 1, 0.65 * a), HORIZONTAL_ALIGNMENT_CENTER, r.size.x, font_light)
+			if i == 0:
+				for j in 2:
+					var tb = _title_btn_rect(j)
+					_panel(c, tb, 0.55)
+					_text(c, Vector2(tb.position.x, tb.position.y + 31), ["SOUND", "EXIT"][j], 17, Color(1, 1, 1, 0.85 * a), HORIZONTAL_ALIGNMENT_CENTER, tb.size.x, font_light)
 			if not hs[m].is_empty():
 				_text(c, Vector2(r.position.x, r.end.y + 24), "BEST  %s  %06d" % [hs[m][0].n, int(hs[m][0].s)], 15, Color(1, 0.86, 0.6, 0.8 * a), HORIZONTAL_ALIGNMENT_CENTER, r.size.x, font_light)
 		_text(c, Vector2(vs.x - 220, vs.y - 18), "Build %d" % _my_build(), 14, Color(1, 1, 1, 0.5 * a), HORIZONTAL_ALIGNMENT_RIGHT, 200, font_light)
@@ -1265,7 +1268,7 @@ func _settings_draw(c: Control) -> void:
 			c.draw_line(Vector2(r.position.x, cy), Vector2(r.end.x, cy), Color(1, 1, 1, 0.22), 4.0, true)
 			c.draw_line(Vector2(r.position.x, cy), Vector2(r.position.x + r.size.x * k, cy), Color(1.0, 0.78, 0.45), 4.0, true)
 			c.draw_circle(Vector2(r.position.x + r.size.x * k, cy), 11.0, Color.WHITE)
-		for i in 3:
+		for i in 5:
 			var br = _panel_btn_rect(i)
 			var bs = StyleBoxFlat.new()
 			bs.bg_color = Color(1, 1, 1, 0.1)
@@ -1273,8 +1276,7 @@ func _settings_draw(c: Control) -> void:
 			bs.set_border_width_all(1)
 			bs.set_corner_radius_all(22)
 			c.draw_style_box(bs, br)
-			_text(c, Vector2(br.position.x, br.position.y + 29), [("AIM:  SNAP TO SPOTS" if aim_mode == "snap" else "AIM:  FREE"), "MOVE BUTTONS", "RESET"][i], 16, Color.WHITE, HORIZONTAL_ALIGNMENT_CENTER, br.size.x, font_light)
-		_text(c, Vector2(pr.position.x, pr.end.y + 24), "Enemies wait while this is open", 13, Color(1, 1, 1, 0.6 * panel_k), HORIZONTAL_ALIGNMENT_CENTER, PANEL_W, font_light)
+			_text(c, Vector2(br.position.x, br.position.y + 29), [("AIM:  SNAP TO SPOTS" if aim_mode == "snap" else "AIM:  FREE"), "MOVE BUTTONS", "RESET CONTROLS", "SOUND", "QUIT TO MENU"][i], 16, Color.WHITE, HORIZONTAL_ALIGNMENT_CENTER, br.size.x, font_light)
 	if editing:
 		c.draw_rect(Rect2(Vector2.ZERO, vs), Color(0, 0, 0, 0.25))
 		_text(c, Vector2(0, 178), "Drag the buttons where your thumbs like them", 20, Color.WHITE, HORIZONTAL_ALIGNMENT_CENTER, vs.x, font_light)
@@ -2248,6 +2250,8 @@ func _input(ev: InputEvent) -> void:
 		if ev.pressed:
 			_press(ev.position, ev.index)
 		elif ev.index == ui_idx:
+			if ui_drag == "snd":
+				_snd_release(ev.position)
 			ui_idx = -1
 			ui_drag = ""
 			_save()
@@ -2260,7 +2264,9 @@ func _input(ev: InputEvent) -> void:
 	elif ev is InputEventScreenDrag:
 		var vs = _vs()
 		if ev.index == ui_idx:
-			if ui_drag.begins_with("slider"):
+			if ui_drag == "snd":
+				_snd_drag(ev.position)
+			elif ui_drag.begins_with("slider"):
 				_slider_set(int(ui_drag.substr(6)), ev.position.x)
 			elif ui_drag == "thumb":
 				thumb_n = (ev.position / vs).clamp(Vector2(0.06, 0.12), Vector2(0.94, 0.9))
@@ -2290,6 +2296,9 @@ func _input(ev: InputEvent) -> void:
 
 
 func _press(p: Vector2, idx: int = 0) -> void:
+	if snd_open:
+		_snd_press(p, idx)
+		return
 	match state:
 		"title":
 			if st_t < 0.6:
@@ -2301,6 +2310,13 @@ func _press(p: Vector2, idx: int = 0) -> void:
 				if _mode_btn_rect(i).grow(10).has_point(p):
 					_start_mode(MODES[i])
 					return
+			if _title_btn_rect(0).grow(6).has_point(p):
+				snd_open = true
+				return
+			if _title_btn_rect(1).grow(6).has_point(p):
+				_save()
+				get_tree().quit()
+				return
 		"over":
 			if st_t < 1.2:
 				return
@@ -3138,6 +3154,8 @@ func _load_save() -> void:
 	var c = ConfigFile.new()
 	if c.load(SAVE_PATH) == OK:
 		best = int(c.get_value("game", "best", 0))
+		for sd in SND:
+			set(sd.key, float(c.get_value("audio", sd.key, get(sd.key))))
 		mode = str(c.get_value("game", "mode", mode))
 		last_name = str(c.get_value("game", "name", ""))
 		for m in MODES:
@@ -3157,6 +3175,8 @@ func _save() -> void:
 		return
 	var c = ConfigFile.new()
 	c.set_value("game", "best", best)
+	for sd in SND:
+		c.set_value("audio", sd.key, get(sd.key))
 	c.set_value("game", "mode", mode)
 	c.set_value("game", "name", last_name)
 	for m in MODES:
@@ -3556,6 +3576,41 @@ func _autotest(dt: float) -> void:
 		at_step = 16
 	elif at_step == 16 and at_t > 50.9:
 		_snap("29_menu")
+		_press(_title_btn_rect(0).get_center())
+		at_step = 17
+	elif at_step == 17 and at_t > 51.4:
+		_snap("33_sound")
+		# senkrecht wischen über einem Regler: darf nur scrollen
+		var t = _snd_track(2)
+		var v0 = snd_bright
+		_press(t.get_center(), 5)
+		var ev = InputEventScreenDrag.new()
+		ev.index = 5
+		ev.position = t.get_center() + Vector2(6, -60)
+		_input(ev)
+		ev.position = t.get_center() + Vector2(10, -200)
+		_input(ev)
+		var up = InputEventScreenTouch.new()
+		up.index = 5
+		up.position = ev.position
+		up.pressed = false
+		_input(up)
+		print("SND scroll=", snd_scroll, " bright ", v0, " -> ", snd_bright)
+		# waagerecht ziehen: Regler bewegt sich
+		var t2 = _snd_track(4)
+		var m0 = snd_muffle
+		_press(t2.get_center(), 6)
+		var ev2 = InputEventScreenDrag.new()
+		ev2.index = 6
+		ev2.position = t2.get_center() + Vector2(-90, 4)
+		_input(ev2)
+		up.index = 6
+		up.position = ev2.position
+		_input(up)
+		print("SND muffle ", m0, " -> ", snd_muffle)
+		at_step = 18
+	elif at_step == 18 and at_t > 51.8:
+		_snap("34_sound_scrolled")
 		get_tree().quit()
 
 
@@ -3985,17 +4040,7 @@ func _door_update(dt: float) -> void:
 func _nb_say(line: String) -> void:
 	if not nb_card.pv.visible:
 		return
-	var pl = AudioStreamPlayer3D.new()
-	pl.stream = nb_snd[line]
-	pl.bus = "Far"
-	pl.unit_size = 7.0
-	pl.volume_db = 8.0
-	pl.panning_strength = 1.6
-	pl.attenuation_filter_cutoff_hz = 8000.0
-	add_child(pl)
-	pl.global_position = nb_card.pv.global_position + Vector3(0, 1.6, 0.3)
-	pl.finished.connect(pl.queue_free)
-	pl.play()
+	_far_voice(nb_snd[line], nb_card.pv.global_position + Vector3(0, 1.6, 0.3), 1.0, 1.0)
 
 
 func _nb_hit(pt: Vector3) -> void:
@@ -4597,3 +4642,274 @@ func _shadows_update() -> void:
 			shadows.remove_at(i)
 			continue
 		_shadow_place(sd)
+
+
+
+# ---------------------------------------------------------------------------
+# Klang-Einstellungen: wie die Gegnerstimmen im Raum klingen (Hall, Entfernung, Richtung) und Lautstärken.
+# Eigenes Fenster mit Scrollen; ein Regler bewegt sich nur bei waagerechtem Ziehen, senkrecht wird gescrollt.
+
+const SND = [
+	{"label": "ROOM SIZE", "hint": "small room … big hall", "key": "snd_room", "min": 0.0, "max": 1.0, "def": 0.35},
+	{"label": "REVERB AMOUNT", "hint": "how much echo you hear", "key": "snd_wet", "min": 0.0, "max": 0.8, "def": 0.2},
+	{"label": "REVERB BRIGHTNESS", "hint": "dull … bright echo", "key": "snd_bright", "min": 0.0, "max": 1.0, "def": 0.4},
+	{"label": "PRE-DELAY", "hint": "how far away the walls feel", "key": "snd_pre", "min": 0.0, "max": 150.0, "def": 30.0},
+	{"label": "MUFFLE", "hint": "less treble = further away", "key": "snd_muffle", "min": 0.0, "max": 1.0, "def": 0.45},
+	{"label": "DISTANCE FALLOFF", "hint": "how fast voices fade with distance", "key": "snd_fall", "min": 0.0, "max": 1.0, "def": 0.5},
+	{"label": "LEFT / RIGHT", "hint": "how strongly voices pan", "key": "snd_pan", "min": 0.0, "max": 2.0, "def": 1.6},
+	{"label": "ENEMY VOICES", "hint": "volume", "key": "snd_vol_far", "min": -18.0, "max": 12.0, "def": 0.0},
+	{"label": "MEGAPHONE", "hint": "volume of your police voice", "key": "snd_vol_mega", "min": -18.0, "max": 12.0, "def": 3.0}]
+var snd_room = 0.35
+var snd_wet = 0.2
+var snd_bright = 0.4
+var snd_pre = 30.0
+var snd_muffle = 0.45
+var snd_fall = 0.5
+var snd_pan = 1.6
+var snd_vol_far = 0.0
+var snd_vol_mega = 3.0
+var snd_open = false
+var snd_scroll = 0.0
+var snd_touch = {}
+var far_bus = -1
+const SND_ROW = 84.0
+
+
+func _far_voice(stream: AudioStream, pos: Vector3, pitch: float = 1.0, extra_unit: float = 0.0) -> void:
+	var p = AudioStreamPlayer3D.new()
+	p.stream = stream
+	p.bus = "Far"
+	p.unit_size = lerpf(14.0, 3.0, snd_fall) + extra_unit
+	p.volume_db = 7.0 + snd_vol_far
+	p.max_db = 6.0
+	p.panning_strength = snd_pan
+	p.pitch_scale = pitch
+	p.attenuation_filter_cutoff_hz = lerpf(12000.0, 3000.0, snd_muffle)
+	p.attenuation_filter_db = lerpf(-2.0, -18.0, snd_muffle)
+	add_child(p)
+	p.global_position = pos
+	p.finished.connect(p.queue_free)
+	p.play()
+
+
+func _audio_apply() -> void:
+	if far_bus >= 0:
+		var lp: AudioEffectLowPassFilter = AudioServer.get_bus_effect(far_bus, 0)
+		lp.cutoff_hz = exp(lerpf(log(14000.0), log(1800.0), snd_muffle))
+		var rv: AudioEffectReverb = AudioServer.get_bus_effect(far_bus, 1)
+		rv.room_size = snd_room
+		rv.wet = snd_wet
+		rv.dry = 1.0 - snd_wet * 0.35
+		rv.damping = 1.0 - snd_bright
+		rv.hipass = 0.15
+		rv.predelay_msec = snd_pre
+	if mega_player != null:
+		mega_player.volume_db = snd_vol_mega
+
+
+func _quit_to_menu() -> void:
+	panel_open = false
+	for e in enemies:
+		e.pv.queue_free()
+	enemies.clear()
+	for sl in slots:
+		sl.busy = false
+	if scene != "street":
+		_back_to_street()
+		_close_book()
+		_open_book(0.2)
+	msg_t = 0.0
+	cover = true
+	_set_state("title")
+
+
+func _title_btn_rect(i: int) -> Rect2:
+	var vs = _vs()
+	return Rect2(24 + i * 142, vs.y - 74, 128, 48)
+
+
+func _snd_rect() -> Rect2:
+	var vs = _vs()
+	var w = minf(700.0, vs.x - 40.0)
+	return Rect2(vs.x * 0.5 - w * 0.5, 24, w, vs.y - 48)
+
+
+func _snd_list_rect() -> Rect2:
+	var r = _snd_rect()
+	return Rect2(r.position.x + 20, r.position.y + 84, r.size.x - 40, r.size.y - 100)
+
+
+func _snd_hdr_btn(i: int) -> Rect2:
+	var r = _snd_rect()
+	return Rect2(r.end.x - 20 - (3 - i) * 128, r.position.y + 18, 118, 48)
+
+
+func _snd_max_scroll() -> float:
+	return maxf(0.0, SND.size() * SND_ROW - _snd_list_rect().size.y)
+
+
+func _snd_row_y(i: int) -> float:
+	return _snd_list_rect().position.y + i * SND_ROW - snd_scroll
+
+
+func _snd_track(i: int) -> Rect2:
+	var lr = _snd_list_rect()
+	var y = _snd_row_y(i) + 34
+	return Rect2(lr.position.x + 70, y, lr.size.x - 140, 40)
+
+
+func _snd_minus(i: int) -> Rect2:
+	var t = _snd_track(i)
+	return Rect2(t.position.x - 64, t.position.y - 2, 48, 44)
+
+
+func _snd_plus(i: int) -> Rect2:
+	var t = _snd_track(i)
+	return Rect2(t.end.x + 16, t.position.y - 2, 48, 44)
+
+
+func _snd_set(i: int, v: float) -> void:
+	var sd = SND[i]
+	var stp = (sd.max - sd.min) / 40.0
+	set(sd.key, clampf(snappedf(v, stp), sd.min, sd.max))
+	_audio_apply()
+
+
+func _snd_press(p: Vector2, idx: int) -> void:
+	for i in 3:
+		if _snd_hdr_btn(i).has_point(p):
+			match i:
+				0:
+					_snd_test()
+				1:
+					for sd in SND:
+						set(sd.key, sd.def)
+					_audio_apply()
+					_save()
+				2:
+					snd_open = false
+					_save()
+			return
+	if _snd_list_rect().has_point(p):
+		ui_idx = idx
+		ui_drag = "snd"
+		var row = int((p.y - _snd_list_rect().position.y + snd_scroll) / SND_ROW)
+		snd_touch = {"p0": p, "mode": "", "row": row, "s0": snd_scroll}
+
+
+func _snd_drag(p: Vector2) -> void:
+	var d: Vector2 = p - snd_touch.p0
+	if snd_touch.mode == "":
+		if absf(d.y) > 12.0 and absf(d.y) > absf(d.x):
+			snd_touch.mode = "scroll"
+		elif absf(d.x) > 12.0 and absf(d.x) > absf(d.y) * 1.2:
+			var r = snd_touch.row
+			if r >= 0 and r < SND.size():
+				var t = _snd_track(r)
+				if p.y > t.position.y - 30 and p.y < t.end.y + 20 and snd_touch.p0.x > t.position.x - 20 and snd_touch.p0.x < t.end.x + 20:
+					snd_touch.mode = "slider"
+					snd_touch.v0 = float(get(SND[r].key))
+	if snd_touch.mode == "scroll":
+		snd_scroll = clampf(snd_touch.s0 - d.y, 0.0, _snd_max_scroll())
+	elif snd_touch.mode == "slider":
+		var sd = SND[snd_touch.row]
+		var t = _snd_track(snd_touch.row)
+		# relativ ziehen: der Wert springt nicht unter den Finger, sondern folgt der Bewegung
+		_snd_set(snd_touch.row, snd_touch.v0 + d.x / t.size.x * (sd.max - sd.min))
+
+
+func _snd_release(p: Vector2) -> void:
+	if snd_touch.get("mode", "x") != "":
+		return
+	var r = snd_touch.row
+	if r < 0 or r >= SND.size():
+		return
+	var sd = SND[r]
+	var stp = (sd.max - sd.min) / 40.0
+	if _snd_minus(r).grow(8).has_point(p):
+		_snd_set(r, float(get(sd.key)) - stp)
+	elif _snd_plus(r).grow(8).has_point(p):
+		_snd_set(r, float(get(sd.key)) + stp)
+
+
+# Probe: ein Gegner ruft aus einem Fenster links hinten, danach das Megafon
+func _snd_test() -> void:
+	var pick = null
+	for sl in slots:
+		if sl.pos.y > 1.0:
+			pick = sl
+			break
+	if pick == null:
+		pick = slots[0]
+	var arr: Array = voices.get("appear", {}).get(["A", "B", "C", "D"][randi() % 4], [])
+	if not arr.is_empty():
+		_far_voice(arr[randi() % arr.size()], pick.pos + Vector3(0, 1.6, 0))
+	get_tree().create_timer(2.2).timeout.connect(func():
+		var near = null
+		for sl in slots:
+			if sl.name == "car" or sl.name == "crates":
+				near = sl
+				break
+		if near != null and not arr.is_empty():
+			_far_voice(arr[randi() % arr.size()], near.pos + Vector3(0, 1.4, 0)))
+	_megaphone(randi_range(1, 4), 4.2)
+
+
+func _snd_draw(c: Control) -> void:
+	if not snd_open:
+		return
+	var vs = _vs()
+	c.draw_rect(Rect2(Vector2.ZERO, vs), Color(0, 0, 0, 0.5))
+	var r = _snd_rect()
+	_panel(c, r, 0.9)
+	_text(c, Vector2(r.position.x + 24, r.position.y + 50), "SOUND", 26, Color(1, 0.92, 0.8))
+	for i in 3:
+		var b = _snd_hdr_btn(i)
+		var bs = StyleBoxFlat.new()
+		bs.bg_color = Color(1, 0.78, 0.3, 0.95) if i == 2 else Color(1, 1, 1, 0.1)
+		bs.border_color = Color(1, 1, 1, 0.35)
+		bs.set_border_width_all(1)
+		bs.set_corner_radius_all(24)
+		c.draw_style_box(bs, b)
+		_text(c, Vector2(b.position.x, b.position.y + 31), ["TEST", "RESET", "DONE"][i], 17, Color(0.1, 0.07, 0.03) if i == 2 else Color.WHITE, HORIZONTAL_ALIGNMENT_CENTER, b.size.x, font_light)
+	var lr = _snd_list_rect()
+	for i in SND.size():
+		var y = _snd_row_y(i)
+		if y + SND_ROW < lr.position.y - 2 or y > lr.end.y:
+			continue
+		# Zeilen am Rand ausblenden statt hart abschneiden
+		var a = clampf(minf((y + SND_ROW - lr.position.y) / 30.0, (lr.end.y - y) / 30.0), 0.0, 1.0)
+		if a <= 0.02:
+			continue
+		var sd = SND[i]
+		var val: float = get(sd.key)
+		var k = clampf((val - sd.min) / (sd.max - sd.min), 0, 1)
+		var vt: String
+		if sd.key.begins_with("snd_vol"):
+			vt = "%+.0f dB" % val
+		elif sd.key == "snd_pre":
+			vt = "%d ms" % roundi(val)
+		elif sd.key == "snd_pan":
+			vt = "%d %%" % roundi(val / 2.0 * 100.0)
+		else:
+			vt = "%d %%" % roundi(k * 100.0)
+		_text(c, Vector2(lr.position.x + 6, y + 22), sd.label, 16, Color(1, 1, 1, 0.9 * a))
+		_text(c, Vector2(lr.position.x + 200, y + 22), sd.hint, 13, Color(1, 1, 1, 0.5 * a), HORIZONTAL_ALIGNMENT_LEFT, -1, font_light)
+		_text(c, Vector2(lr.position.x, y + 22), vt, 17, Color(1, 0.86, 0.55, a), HORIZONTAL_ALIGNMENT_RIGHT, lr.size.x - 6)
+		var t = _snd_track(i)
+		var cy = t.get_center().y
+		c.draw_line(Vector2(t.position.x, cy), Vector2(t.end.x, cy), Color(1, 1, 1, 0.22 * a), 5.0, true)
+		c.draw_line(Vector2(t.position.x, cy), Vector2(t.position.x + t.size.x * k, cy), Color(1.0, 0.78, 0.45, a), 5.0, true)
+		c.draw_circle(Vector2(t.position.x + t.size.x * k, cy), 14.0, Color(1, 1, 1, a))
+		for j in 2:
+			var b = _snd_minus(i) if j == 0 else _snd_plus(i)
+			c.draw_circle(b.get_center(), 21.0, Color(1, 1, 1, 0.12 * a))
+			c.draw_arc(b.get_center(), 21.0, 0, TAU, 32, Color(1, 1, 1, 0.4 * a), 1.5, true)
+			_text(c, Vector2(b.position.x, b.position.y + 32), "–" if j == 0 else "+", 24, Color(1, 1, 1, a), HORIZONTAL_ALIGNMENT_CENTER, b.size.x)
+	# Scrollbalken
+	var ms = _snd_max_scroll()
+	if ms > 0.0:
+		var h = lr.size.y * lr.size.y / (lr.size.y + ms)
+		var y0 = lr.position.y + (lr.size.y - h) * snd_scroll / ms
+		c.draw_line(Vector2(r.end.x - 8, y0), Vector2(r.end.x - 8, y0 + h), Color(1, 1, 1, 0.35), 4.0, true)
+	_text(c, Vector2(r.position.x, r.end.y - 6), "Swipe up/down to scroll  ·  drag sideways to change a value", 12, Color(1, 1, 1, 0.45), HORIZONTAL_ALIGNMENT_CENTER, r.size.x, font_light)
