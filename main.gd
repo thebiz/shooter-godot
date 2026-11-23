@@ -553,7 +553,7 @@ func _make_world() -> void:
 			sl.partner = "crates"
 	slots.append({"pos": Vector3(4.25, 0.28, -8.75), "mode": "flip", "busy": false, "name": "car", "box_lift": 1.02, "eh": ENEMY_H_FRONT})
 	var street_deco = _make_street_life(fac, fac_h, tree)
-	_shadow(car, 1.15, 1.5, 0.6)
+	_shadow(car, 1.0, 1.3, 0.6)
 	_shadow(crates, 1.05, 1.4, 0.55)
 	_shadow(tree, 0.45, 2.2, 0.35)
 	_shadow(hedge, 1.05, 1.0, 0.45)
@@ -681,8 +681,8 @@ func _make_harbor() -> void:
 		if sl.name == "door_br":
 			sl.partner = "car"
 	var harbor_deco = _make_harbor_life(sky.pv)
-	_shadow(truck, 1.05, 2.0, 0.6)
-	_shadow(fork, 1.1, 1.4, 0.6)
+	_shadow(truck, 0.9, 1.5, 0.6)
+	_shadow(fork, 0.95, 1.2, 0.6)
 	_shadow(pal, 1.05, 1.4, 0.55)
 	_shadow(prop, 1.0, 1.3, 0.55)
 	_shadow(mast, 0.4, 0.6, 0.45)
@@ -791,10 +791,14 @@ func _bark(e: Dictionary, cat: String, chance: float = 1.0, delay: float = 0.0, 
 			return
 		var p = AudioStreamPlayer3D.new()
 		p.stream = stream
-		p.unit_size = 14.0
-		p.volume_db = 2.0
+		# räumlich: Richtung (links/rechts) deutlich, weiter weg leiser und dumpfer
+		p.unit_size = 6.5
+		p.volume_db = 7.0
+		p.max_db = 6.0
+		p.panning_strength = 1.6
 		p.pitch_scale = randf_range(0.97, 1.03)
-		p.attenuation_filter_cutoff_hz = 20500.0
+		p.attenuation_filter_cutoff_hz = 7000.0
+		p.attenuation_filter_db = -10.0
 		add_child(p)
 		p.global_position = e.mi.global_transform * Vector3(0, e.h * 0.85, 0)
 		p.finished.connect(p.queue_free)
@@ -2570,7 +2574,7 @@ func _car_explode() -> void:
 	tw.tween_property(pv, "position", base + Vector3(0.15, 1.5, -0.2), 0.32).set_ease(Tween.EASE_OUT).set_trans(Tween.TRANS_QUAD)
 	tw.parallel().tween_property(pv, "rotation", Vector3(-0.35, 0.2, 0.28), 0.32)
 	tw.tween_property(pv, "position", base + Vector3(0.25, -0.03, -0.3), 0.3).set_ease(Tween.EASE_IN).set_trans(Tween.TRANS_QUAD)
-	tw.parallel().tween_property(pv, "rotation", Vector3(-0.06, 0.05, -0.05), 0.3)
+	tw.parallel().tween_property(pv, "rotation", Vector3(-0.05, 0.03, 0.0), 0.3)
 	tw.tween_callback(func(): _sfx("target_down", 3.0, 0.0))
 	tw.tween_property(pv, "position", base + Vector3(0.25, 0.08, -0.3), 0.08)
 	tw.tween_property(pv, "position", base + Vector3(0.25, -0.01, -0.3), 0.1)
@@ -3966,9 +3970,10 @@ func _nb_say(line: String) -> void:
 		return
 	var pl = AudioStreamPlayer3D.new()
 	pl.stream = nb_snd[line]
-	pl.unit_size = 16.0
-	pl.volume_db = 4.0
-	pl.attenuation_filter_cutoff_hz = 20500.0
+	pl.unit_size = 7.0
+	pl.volume_db = 8.0
+	pl.panning_strength = 1.6
+	pl.attenuation_filter_cutoff_hz = 8000.0
 	add_child(pl)
 	pl.global_position = nb_card.pv.global_position + Vector3(0, 1.6, 0.3)
 	pl.finished.connect(pl.queue_free)
@@ -4311,6 +4316,7 @@ func _atmo_update(dt: float) -> void:
 
 const MO_W = 18.0
 const MO_X = -0.8
+const SIGN_W = 4.0
 const CW = 8.1               # Streifenwagen (50 % größer)
 const MO_HOLES = {"up1": [0.3241, 0.4087, 0.1443, 0.4216], "up2": [0.7621, 0.8399, 0.1488, 0.4216],
 	"door": [0.4081, 0.4769, 0.5727, 0.8929], "win": [0.8095, 0.8754, 0.5750, 0.7621]}
@@ -4366,13 +4372,13 @@ func _make_motel() -> void:
 	var cop = _card("m_cop.png", CW, Vector3(-7.7, -0.04, -9.8), "metal")
 	cop.delay = 0.25
 	cards.append(cop)
-	var sign = _card("m_sign.png", 3.0, Vector3(7.6, -0.05, -11.8), "metal")
+	var sign = _card("m_sign.png", SIGN_W, Vector3(7.6, -0.05, -11.8), "metal")
 	sign.delay = 0.4
 	cards.append(sign)
 	var cop2 = _card("m_cop2.png", CW, Vector3(8.4, -0.04, -12.3), "metal")
 	cop2.delay = 0.5
 	cards.append(cop2)
-	var pk = _card("m_pickup.png", 5.7, Vector3(5.2, -0.04, -8.4), "metal")
+	var pk = _card("m_pickup.png", 7.3, Vector3(5.6, -0.02, -8.4), "metal")
 	pk.delay = 0.6
 	pk.base = pk.pv.position
 	pk.label = "PICKUP"
@@ -4400,11 +4406,11 @@ func _make_motel() -> void:
 			slots.append({"pos": Vector3(x, ybot - 0.02, FAC_Z - 0.3), "mode": "flip", "busy": false, "name": n, "eh": oh - 0.06, "box_lift": 0.0})
 	slots.append({"pos": Vector3(-3.1, 0.2, -7.4), "mode": "flip", "busy": false, "name": "crates", "eh": ENEMY_H_FRONT})
 	# vorne seitlich an der Motorhaube des Pickups, gut sichtbar
-	slots.append({"pos": Vector3(2.05, 0.0, -8.7), "mode": "flip", "busy": false, "name": "car", "box_lift": 0.0, "eh": ENEMY_H_FRONT})
+	slots.append({"pos": Vector3(1.6, 0.0, -8.0), "mode": "flip", "busy": false, "name": "car", "box_lift": 0.0, "eh": ENEMY_H_FRONT})
 	var deco = _make_motel_life(mo, mh, sink, sign)
-	_shadow(cop, 1.05, 2.2, 0.62)
-	_shadow(cop2, 1.05, 2.2, 0.62)
-	_shadow(pk, 1.05, 2.0, 0.62)
+	_shadow(cop, 0.9, 1.6, 0.62)
+	_shadow(cop2, 0.9, 1.6, 0.62)
+	_shadow(pk, 0.9, 1.6, 0.62)
 	_shadow(tr, 1.02, 1.5, 0.58)
 	_shadow(sign, 0.25, 0.5, 0.4)
 	_shadow(mo, 1.0, 1.4, 0.45)
@@ -4436,12 +4442,12 @@ func _make_motel_life(mo: Dictionary, mh: float, sink: float, sign: Dictionary) 
 		var mi = _glow_node(deco, gl, Vector3(sp[0], bar_h, z), 2.0, Color(1.0, 0.15, 0.1) if sp[1] == "r" else Color(0.2, 0.4, 1.0))
 		cop_glows.append({"mi": mi, "c": sp[1], "ph": 0.0 if sp[0] < 0 else 0.37})
 	# Neonschild: MOTEL-Schriftzug flackert ab und zu, der Stern leuchtet ruhig
-	var sw = 3.0
+	var sw = SIGN_W
 	var shh: float = sign.h
 	var sx = 7.6
-	neon.letters = _glow_node(deco, gl, Vector3(sx + 0.03 * sw, -0.05 + (1.0 - 0.265) * shh, -11.7), 3.4, Color(1.0, 0.3, 0.14))
+	neon.letters = _glow_node(deco, gl, Vector3(sx + 0.03 * sw, -0.05 + (1.0 - 0.265) * shh, -11.7), 3.4 * SIGN_W / 3.0, Color(1.0, 0.3, 0.14))
 	neon.letters.scale = Vector3(1.0, 0.42, 1.0)
-	neon.star = _glow_node(deco, gl, Vector3(sx + 0.02 * sw, -0.05 + (1.0 - 0.1) * shh, -11.7), 1.6, Color(1.0, 0.75, 0.4))
+	neon.star = _glow_node(deco, gl, Vector3(sx + 0.02 * sw, -0.05 + (1.0 - 0.1) * shh, -11.7), 1.6 * SIGN_W / 3.0, Color(1.0, 0.75, 0.4))
 	neon.t = 3.0
 	neon.dip = 0.0
 	# Wandlampen am Motel (sanft, eine wackelt)
@@ -4449,7 +4455,7 @@ func _make_motel_life(mo: Dictionary, mh: float, sink: float, sign: Dictionary) 
 		_glow(deco, gl, Vector3(MO_X + (uv.x - 0.5) * MO_W, FAC_Y - sink + (1.0 - uv.y) * mh, FAC_Z + 0.2), 1.1, Color(1.0, 0.72, 0.38), "flick")
 	_glow(deco, gl, Vector3(MO_X + (0.7375 - 0.5) * MO_W, FAC_Y - sink + (1.0 - 0.5175) * mh, FAC_Z + 0.2), 1.8, Color(0.9, 0.95, 1.0), "flick")
 	mega_player = AudioStreamPlayer.new()
-	mega_player.volume_db = -1.0
+	mega_player.volume_db = 1.0
 	add_child(mega_player)
 	return deco
 
@@ -4551,7 +4557,7 @@ void fragment() {
 	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	mi.sorting_offset = -1.0
 	add_child(mi)
-	shadows.append({"mi": mi, "node": c.pv, "k": alpha, "off": Vector3(0, 0, depth * 0.32)})
+	shadows.append({"mi": mi, "node": c.pv, "k": alpha, "off": Vector3(0, 0, depth * 0.1)})
 	_shadow_place(shadows[-1])
 
 
@@ -4563,7 +4569,7 @@ func _shadow_place(sd: Dictionary) -> void:
 	var up = clampf(n.global_basis.y.normalized().y, 0.0, 1.0)
 	var vis = n.is_visible_in_tree()
 	sd.mi.visible = vis and up > 0.05
-	sd.mi.set_instance_shader_parameter("k", minf(0.85, sd.k * 1.3) * up * up)
+	sd.mi.set_instance_shader_parameter("k", minf(0.9, sd.k * 1.45) * up * up)
 
 
 func _shadows_update() -> void:
