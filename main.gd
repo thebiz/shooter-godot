@@ -747,6 +747,22 @@ func _make_sounds() -> void:
 	var lim = AudioEffectHardLimiter.new()
 	lim.ceiling_db = -0.8
 	AudioServer.add_bus_effect(bi, lim)
+	# Gegnerstimmen: eigener Kanal mit Hall und weniger Höhen, damit sie klar nach "weit weg im Gebäude" klingen
+	var fb = AudioServer.bus_count
+	AudioServer.add_bus(fb)
+	AudioServer.set_bus_name(fb, "Far")
+	AudioServer.set_bus_send(fb, "Master")
+	var lp = AudioEffectLowPassFilter.new()
+	lp.cutoff_hz = 3800.0
+	AudioServer.add_bus_effect(fb, lp)
+	var rv = AudioEffectReverb.new()
+	rv.room_size = 0.55
+	rv.damping = 0.6
+	rv.wet = 0.32
+	rv.dry = 0.85
+	rv.predelay_msec = 40.0
+	AudioServer.add_bus_effect(fb, rv)
+	AudioServer.set_bus_volume_db(fb, -2.0)
 	music = AudioStreamPlayer.new()
 	music.bus = "Music"
 	music.stream = sounds.get("music")
@@ -792,6 +808,7 @@ func _bark(e: Dictionary, cat: String, chance: float = 1.0, delay: float = 0.0, 
 		var p = AudioStreamPlayer3D.new()
 		p.stream = stream
 		# räumlich: Richtung (links/rechts) deutlich, weiter weg leiser und dumpfer
+		p.bus = "Far"
 		p.unit_size = 6.5
 		p.volume_db = 7.0
 		p.max_db = 6.0
@@ -3970,6 +3987,7 @@ func _nb_say(line: String) -> void:
 		return
 	var pl = AudioStreamPlayer3D.new()
 	pl.stream = nb_snd[line]
+	pl.bus = "Far"
 	pl.unit_size = 7.0
 	pl.volume_db = 8.0
 	pl.panning_strength = 1.6
@@ -4382,8 +4400,7 @@ func _make_motel() -> void:
 	pk.delay = 0.6
 	pk.base = pk.pv.position
 	pk.label = "PICKUP"
-	pk.debris = [["m_deb_tire.png", 0.9, Vector3(-1.2, 0.0, 0.5), Vector3(0.0, 0.3, -0.1)],
-		["m_deb_mirror.png", 0.42, Vector3(-2.1, 0.0, 0.6), Vector3(-PI * 0.4, 0.6, 0.0)],
+	pk.debris = [["m_deb_mirror.png", 0.42, Vector3(-2.1, 0.0, 0.6), Vector3(-PI * 0.4, 0.6, 0.0)],
 		["m_deb_light.png", 0.36, Vector3(-2.8, 0.0, 0.4), Vector3(-PI * 0.45, 0.9, 0.0)]]
 	cards.append(pk)
 	var tr = _card("m_trash.png", 4.6, Vector3(-4.3, -0.04, -7.0), "metal")
@@ -4455,7 +4472,7 @@ func _make_motel_life(mo: Dictionary, mh: float, sink: float, sign: Dictionary) 
 		_glow(deco, gl, Vector3(MO_X + (uv.x - 0.5) * MO_W, FAC_Y - sink + (1.0 - uv.y) * mh, FAC_Z + 0.2), 1.1, Color(1.0, 0.72, 0.38), "flick")
 	_glow(deco, gl, Vector3(MO_X + (0.7375 - 0.5) * MO_W, FAC_Y - sink + (1.0 - 0.5175) * mh, FAC_Z + 0.2), 1.8, Color(0.9, 0.95, 1.0), "flick")
 	mega_player = AudioStreamPlayer.new()
-	mega_player.volume_db = 1.0
+	mega_player.volume_db = 3.0
 	add_child(mega_player)
 	return deco
 
